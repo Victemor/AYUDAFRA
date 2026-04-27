@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 14b4d0c9880ae904390448e710decf00, type: 3}
+  m_Name: Nostalgiamedia
+  m_EditorClassIdentifier: Assembly-CSharp::WeatherProfile
+  bloomIntensity: 3
+  bloomColor: {r: 1, g: 0.52156866, b: 0, a: 1}
+  rainIntensity: 0
+  windIntensity: 4
+  fireIntensity: 0.45
+  swayX: 6
+  swayZ: 6
+  swaySpeed: 0.6

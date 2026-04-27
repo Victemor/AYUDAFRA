@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9b1ab2751572b1d41acc4f8273d3ed83, type: 3}
+  m_Name: Refugio
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Data.MemoryDefinition
+  id: Refugio
+  objects:
+  - {fileID: 11400000, guid: a914a1e06b06cf24b8d12a5227715c44, type: 2}
+  - {fileID: 11400000, guid: 98240a55f2dbe4b4f91466167084af03, type: 2}
+  unlockConditions:
+  - conditions:
+    - {fileID: 11400000, guid: ab657eec94a2a82428e6eec4ca9fc034, type: 2}
+  sceneName: Refugio
