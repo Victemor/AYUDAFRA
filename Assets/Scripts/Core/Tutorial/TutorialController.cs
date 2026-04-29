@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using Game.Data;
@@ -7,6 +8,10 @@ using Game.Core;
 /// <summary>
 /// Sistema central de tutoriales del juego.
 /// Controla visualización, persistencia y auto-cierre de instrucciones.
+///
+/// Resolución de texto (prioridad descendente):
+/// 1. Si <c>instruction.LocalizedText</c> está asignado → ruta localizada (async).
+/// 2. Si no → <c>instruction.Text</c> directo (fallback, preserva textos existentes).
 /// </summary>
 public class TutorialController : MonoBehaviour
 {
@@ -58,26 +63,26 @@ public class TutorialController : MonoBehaviour
 
     private void OnEnable()
     {
-        GameEvents.OnMemoryStateChanged += HandleMemoryStateChanged;
-        GameEvents.OnMemoryConnectionChanged += HandleMemoryConnectionChanged;
-        GameEvents.OnFragmentRenamed += HandleFragmentRenamed;
+        GameEvents.OnMemoryStateChanged       += HandleMemoryStateChanged;
+        GameEvents.OnMemoryConnectionChanged   += HandleMemoryConnectionChanged;
+        GameEvents.OnFragmentRenamed           += HandleFragmentRenamed;
         GameEvents.OnDraggableInventoryChanged += HandleInventoryChanged;
         GameEvents.OnDraggableItemStateChanged += HandleDraggableItemStateChanged;
-        GameEvents.OnDropMoved += HandleDropMoved;
-        GameEvents.OnDropRightClicked += HandleDropRightClicked;
-        GameEvents.OnInteractableClicked += HandleInteractableClicked;
+        GameEvents.OnDropMoved                 += HandleDropMoved;
+        GameEvents.OnDropRightClicked          += HandleDropRightClicked;
+        GameEvents.OnInteractableClicked       += HandleInteractableClicked;
     }
 
     private void OnDisable()
     {
-        GameEvents.OnMemoryStateChanged -= HandleMemoryStateChanged;
-        GameEvents.OnMemoryConnectionChanged -= HandleMemoryConnectionChanged;
-        GameEvents.OnFragmentRenamed -= HandleFragmentRenamed;
+        GameEvents.OnMemoryStateChanged       -= HandleMemoryStateChanged;
+        GameEvents.OnMemoryConnectionChanged   -= HandleMemoryConnectionChanged;
+        GameEvents.OnFragmentRenamed           -= HandleFragmentRenamed;
         GameEvents.OnDraggableInventoryChanged -= HandleInventoryChanged;
         GameEvents.OnDraggableItemStateChanged -= HandleDraggableItemStateChanged;
-        GameEvents.OnDropMoved -= HandleDropMoved;
-        GameEvents.OnDropRightClicked -= HandleDropRightClicked;
-        GameEvents.OnInteractableClicked -= HandleInteractableClicked;
+        GameEvents.OnDropMoved                 -= HandleDropMoved;
+        GameEvents.OnDropRightClicked          -= HandleDropRightClicked;
+        GameEvents.OnInteractableClicked       -= HandleInteractableClicked;
 
         UnsubscribeFromSubState();
     }
@@ -107,6 +112,10 @@ public class TutorialController : MonoBehaviour
                 break;
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Public API
+    // ─────────────────────────────────────────────────────────────────────────
 
     public void ShowInstruction(string id, float offsetY = 0f)
     {
@@ -164,16 +173,76 @@ public class TutorialController : MonoBehaviour
         return instructionMap.TryGetValue(id, out TutorialInstruction instruction) && instruction.HasBeenShown;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Show
+    // ─────────────────────────────────────────────────────────────────────────
+
     private void ShowInstructionInternal(string id, TutorialInstruction instruction, float offsetY)
     {
         currentInstructionId = id;
-        currentInstruction = instruction;
+        currentInstruction   = instruction;
 
-        view.Show(instruction.Text, instruction.Image, offsetY);
+        StartCoroutine(ShowInstructionAsync(instruction, offsetY));
 
         if (instruction.DismissEvent == TutorialDismissEvent.OnEmotionSelected)
         {
             SubscribeToSubState();
+        }
+    }
+
+    /// <summary>
+    /// Resuelve el texto de la instrucción y lo muestra.
+    ///
+    /// Prioridad:
+    /// 1. <c>LocalizedText</c> asignado → ruta localizada (async).
+    /// 2. <c>Text</c> no vacío → ruta raw directa (fallback, preserva textos existentes).
+    /// </summary>
+    private IEnumerator ShowInstructionAsync(TutorialInstruction instruction, float offsetY)
+    {
+        // ── Ruta localizada ──────────────────────────────────────────────────
+        if (instruction.LocalizedText != null && !instruction.LocalizedText.IsEmpty)
+        {
+            var handle = instruction.LocalizedText.GetLocalizedStringAsync();
+            yield return handle;
+
+            if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
+            {
+                Debug.LogWarning(
+                    $"[TutorialController] No se pudo resolver LocalizedText para '{instruction.Id}'.",
+                    this);
+                yield break;
+            }
+
+            view.Show(handle.Result, instruction.Image, offsetY);
+            yield break;
+        }
+
+        // ── Ruta raw (fallback) ──────────────────────────────────────────────
+        if (!string.IsNullOrWhiteSpace(instruction.Text))
+        {
+            view.Show(instruction.Text, instruction.Image, offsetY);
+            yield break;
+        }
+
+        Debug.LogWarning(
+            $"[TutorialController] Instrucción '{instruction.Id}' sin texto ni clave de localización.",
+            this);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Dismiss
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void TryAutoDismiss(TutorialDismissEvent eventType)
+    {
+        if (!HasActiveTutorial || currentInstruction == null)
+        {
+            return;
+        }
+
+        if (currentInstruction.DismissEvent == eventType)
+        {
+            ExecuteHide();
         }
     }
 
@@ -198,95 +267,6 @@ public class TutorialController : MonoBehaviour
         }
 
         return true;
-    }
-
-    private void TryAutoDismiss(TutorialDismissEvent eventType)
-    {
-        if (!HasActiveTutorial || currentInstruction == null)
-        {
-            return;
-        }
-
-        if (currentInstruction.DismissEvent == eventType)
-        {
-            ExecuteHide();
-        }
-    }
-
-    private void HandleMemoryStateChanged(MemoryRuntimeData memory)
-    {
-        if (memory == null)
-        {
-            return;
-        }
-
-        if (memory.CurrentState == MemoryState.Seen || memory.CurrentState == MemoryState.Completed)
-        {
-            TryAutoDismiss(TutorialDismissEvent.OnFragmentOpened);
-        }
-    }
-
-    private void HandleMemoryConnectionChanged(string idA, string idB) =>
-        TryAutoDismiss(TutorialDismissEvent.OnFragmentConnected);
-
-    private void HandleFragmentRenamed() =>
-        TryAutoDismiss(TutorialDismissEvent.OnFragmentRenamed);
-
-    private void HandleInventoryChanged() =>
-        TryAutoDismiss(TutorialDismissEvent.OnInventoryChanged);
-
-    private void HandleDropMoved() =>
-        TryAutoDismiss(TutorialDismissEvent.OnDropMoved);
-
-    private void HandleDropRightClicked() =>
-        TryAutoDismiss(TutorialDismissEvent.OnDropRightClicked);
-
-    private void HandleInteractableClicked() =>
-        TryAutoDismiss(TutorialDismissEvent.OnInteractableClicked);
-
-    private void HandleDraggableItemStateChanged(DraggableItemRuntimeData item)
-    {
-        if (!HasActiveTutorial || currentInstruction == null || item == null)
-        {
-            return;
-        }
-
-        TutorialDismissEvent dismissEvent = currentInstruction.DismissEvent;
-
-        if (dismissEvent != TutorialDismissEvent.OnDraggableItemPickedUp &&
-            dismissEvent != TutorialDismissEvent.OnDraggableItemMoved)
-        {
-            return;
-        }
-
-        if (currentInstruction.DismissItemDefinition != null)
-        {
-            if (item.Definition == null || item.Definition.Id != currentInstruction.DismissItemDefinition.Id)
-            {
-                return;
-            }
-        }
-
-        if (dismissEvent == TutorialDismissEvent.OnDraggableItemMoved &&
-            item.CurrentState == DraggableItemState.Held)
-        {
-            ExecuteHide();
-            return;
-        }
-
-        if (dismissEvent == TutorialDismissEvent.OnDraggableItemPickedUp &&
-            item.CurrentState != DraggableItemState.Held)
-        {
-            ExecuteHide();
-        }
-    }
-
-    private void HandleSubStateChanged(GamePlaySubState previous, GamePlaySubState current)
-    {
-        if (previous == GamePlaySubState.EmotionSelection)
-        {
-            TryAutoDismiss(TutorialDismissEvent.OnEmotionSelected);
-        }
     }
 
     private void SubscribeToSubState()
@@ -328,11 +308,15 @@ public class TutorialController : MonoBehaviour
         string closedId = currentInstructionId;
 
         currentInstructionId = null;
-        currentInstruction = null;
+        currentInstruction   = null;
 
         OnInstructionClosed?.Invoke(closedId);
         SaveProgressSafe();
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Dictionary / Persistence
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void BuildDictionary()
     {
@@ -392,6 +376,99 @@ public class TutorialController : MonoBehaviour
     }
 
     private void SaveProgressSafe() => GameManager.Instance?.SaveProgress();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Event Handlers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void HandleMemoryStateChanged(MemoryRuntimeData memory)
+    {
+        if (memory == null)
+        {
+            return;
+        }
+
+        if (memory.CurrentState == MemoryState.Seen || memory.CurrentState == MemoryState.Completed)
+        {
+            TryAutoDismiss(TutorialDismissEvent.OnFragmentOpened);
+        }
+    }
+
+    private void HandleMemoryConnectionChanged(string idA, string idB) =>
+        TryAutoDismiss(TutorialDismissEvent.OnFragmentConnected);
+
+    /// <summary>GameEvents.OnFragmentRenamed es Action (sin parámetros).</summary>
+    private void HandleFragmentRenamed() =>
+        TryAutoDismiss(TutorialDismissEvent.OnFragmentRenamed);
+
+    /// <summary>GameEvents.OnDraggableInventoryChanged es Action (sin parámetros).</summary>
+    private void HandleInventoryChanged() =>
+        TryAutoDismiss(TutorialDismissEvent.OnInventoryChanged);
+
+    /// <summary>GameEvents.OnDropMoved es Action (sin parámetros).</summary>
+    private void HandleDropMoved() =>
+        TryAutoDismiss(TutorialDismissEvent.OnDropMoved);
+
+    /// <summary>GameEvents.OnDropRightClicked es Action (sin parámetros).</summary>
+    private void HandleDropRightClicked() =>
+        TryAutoDismiss(TutorialDismissEvent.OnDropRightClicked);
+
+    /// <summary>GameEvents.OnInteractableClicked es Action (sin parámetros).</summary>
+    private void HandleInteractableClicked() =>
+        TryAutoDismiss(TutorialDismissEvent.OnInteractableClicked);
+
+    private void HandleDraggableItemStateChanged(DraggableItemRuntimeData item)
+    {
+        if (!HasActiveTutorial || currentInstruction == null || item == null)
+        {
+            return;
+        }
+
+        TutorialDismissEvent dismissEvent = currentInstruction.DismissEvent;
+
+        if (dismissEvent != TutorialDismissEvent.OnDraggableItemPickedUp &&
+            dismissEvent != TutorialDismissEvent.OnDraggableItemMoved)
+        {
+            return;
+        }
+
+        if (currentInstruction.DismissItemDefinition != null)
+        {
+            if (item.Definition == null || item.Definition.Id != currentInstruction.DismissItemDefinition.Id)
+            {
+                return;
+            }
+        }
+
+        if (dismissEvent == TutorialDismissEvent.OnDraggableItemMoved &&
+            item.CurrentState == DraggableItemState.Held)
+        {
+            ExecuteHide();
+            return;
+        }
+
+        if (dismissEvent == TutorialDismissEvent.OnDraggableItemPickedUp &&
+            item.CurrentState != DraggableItemState.Held)
+        {
+            ExecuteHide();
+        }
+    }
+
+    /// <summary>
+    /// El dismiss se activa cuando el subestado SALE de EmotionSelection
+    /// (es decir, cuando la selección emocional acaba de completarse).
+    /// </summary>
+    private void HandleSubStateChanged(GamePlaySubState previous, GamePlaySubState current)
+    {
+        if (previous == GamePlaySubState.EmotionSelection)
+        {
+            TryAutoDismiss(TutorialDismissEvent.OnEmotionSelected);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Debug
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void Log(string message)
     {

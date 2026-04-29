@@ -1,12 +1,20 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 using Game.Core;
 using Game.Data;
 
 /// <summary>
 /// Instrucción de tutorial con soporte de auto-cierre por evento de gameplay
 /// y restricción opcional por estado global del juego.
+///
+/// Estrategia de localización con retrocompatibilidad:
+/// - <c>text</c> (string) se conserva para no perder los textos ya escritos.
+/// - <c>localizedText</c> (LocalizedString) es opcional. Cuando está asignado
+///   tiene prioridad sobre <c>text</c>.
+/// - <see cref="TutorialController"/> aplica: si <c>localizedText</c> está asignado
+///   → ruta localizada; si no → <c>text</c> directo.
 /// </summary>
 [Serializable]
 public class TutorialInstruction
@@ -21,8 +29,12 @@ public class TutorialInstruction
 
     [SerializeField]
     [TextArea]
-    [Tooltip("Texto que se mostrará en pantalla.")]
+    [Tooltip("Texto del tutorial (fallback). Se usa cuando Localized Text no está asignado.")]
     private string text;
+
+    [SerializeField]
+    [Tooltip("(Opcional) Clave de localización del tutorial. Si está asignada, tiene prioridad sobre el texto de arriba.")]
+    private LocalizedString localizedText;
 
     [SerializeField]
     [Tooltip("Imagen opcional para acompañar la instrucción.")]
@@ -51,31 +63,27 @@ public class TutorialInstruction
     public bool HasBeenShown { get; private set; }
 
     public string Id => id;
+
+    /// <summary>Texto plano (fallback cuando LocalizedText no está asignado).</summary>
     public string Text => text;
+
+    /// <summary>
+    /// Referencia de localización opcional.
+    /// Si está asignada, tiene prioridad sobre <see cref="Text"/>.
+    /// </summary>
+    public LocalizedString LocalizedText => localizedText;
+
     public Sprite Image => image;
     public TutorialDismissEvent DismissEvent => dismissEvent;
     public DraggableItemDefinition DismissItemDefinition => dismissItemDefinition;
 
-    /// <summary>
-    /// Indica si esta instrucción puede mostrarse en el estado actual.
-    /// </summary>
+    /// <summary>Indica si esta instrucción puede mostrarse en el estado actual.</summary>
     public bool CanShowInState(GamePlayState state)
     {
         return allowAnyGameState || allowedGameStates.Contains(state);
     }
 
-    public void MarkAsShown()
-    {
-        HasBeenShown = true;
-    }
-
-    public void RestoreShownState(bool shown)
-    {
-        HasBeenShown = shown;
-    }
-
-    public void ResetShownState()
-    {
-        HasBeenShown = false;
-    }
+    public void MarkAsShown()       => HasBeenShown = true;
+    public void RestoreShownState(bool shown) => HasBeenShown = shown;
+    public void ResetShownState()   => HasBeenShown = false;
 }

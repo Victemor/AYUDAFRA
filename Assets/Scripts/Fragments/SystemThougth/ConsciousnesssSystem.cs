@@ -1,7 +1,19 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 
+/// <summary>
+/// Sistema singleton que almacena y notifica el historial de pensamientos del jugador.
+///
+/// Soporta dos rutas para agregar pensamientos:
+/// - <b>Localizada</b>: <see cref="AddThought(string, string)"/> — recibe tabla + clave.
+///   El texto se resuelve al idioma activo en el momento de mostrarse, lo que permite
+///   cambiar de idioma sin invalidar el historial.
+/// - <b>Raw (fallback)</b>: <see cref="AddThoughtRaw"/> — recibe texto plano directamente.
+///   Usado por contenido aún no migrado a la tabla de localización.
+///   El texto NO cambia al cambiar de idioma.
+/// </summary>
 public sealed class ConsciousnessSystem : MonoBehaviour
 {
     public static event Action<ThoughtData> OnThoughtAdded;
@@ -10,10 +22,39 @@ public sealed class ConsciousnessSystem : MonoBehaviour
     [Tooltip("Cantidad máxima de pensamientos almacenados.")]
     private int maxThoughts = 50;
 
+    /// <summary>
+    /// Datos de un pensamiento. Admite ruta localizada (TableName + Key)
+    /// o ruta raw (RawText) como fallback para contenido no migrado.
+    /// </summary>
     public struct ThoughtData
     {
-        public string Text;
+        /// <summary>Nombre de la tabla de localización. Vacío si es raw.</summary>
+        public string TableName;
+
+        /// <summary>Clave en la tabla. Vacía si es raw.</summary>
+        public string Key;
+
+        /// <summary>
+        /// Texto plano para pensamientos no localizados (fallback).
+        /// Vacío si el pensamiento usa la ruta localizada.
+        /// </summary>
+        public string RawText;
+
         public float Timestamp;
+
+        /// <summary>
+        /// True si este pensamiento tiene referencia de localización válida.
+        /// False implica que debe usarse <see cref="RawText"/> directamente.
+        /// </summary>
+        public bool IsLocalized =>
+            !string.IsNullOrWhiteSpace(TableName) &&
+            !string.IsNullOrWhiteSpace(Key);
+
+        /// <summary>
+        /// Crea el <see cref="LocalizedString"/> a partir de la referencia almacenada.
+        /// Solo llamar cuando <see cref="IsLocalized"/> es true.
+        /// </summary>
+        public LocalizedString ToLocalizedString() => new LocalizedString(TableName, Key);
     }
 
     private readonly List<ThoughtData> thoughts = new();
@@ -32,29 +73,46 @@ public sealed class ConsciousnessSystem : MonoBehaviour
         DontDestroyOnLoad(gameObject);
     }
 
-    public void AddThought(string text)
+    /// <summary>
+    /// Registra un pensamiento localizado usando tabla + clave.
+    /// El texto se resuelve al idioma activo cada vez que se muestra.
+    /// </summary>
+    public void AddThought(string tableName, string key)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        ThoughtData thought = new ThoughtData
+        if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(key))
         {
-            Text = text,
+            Debug.LogWarning("[ConsciousnessSystem] Referencia de localización inválida (tabla o clave vacía).");
+            return;
+        }
+
+        AddThoughtInternal(new ThoughtData
+        {
+            TableName = tableName,
+            Key       = key,
             Timestamp = Time.time
-        };
-
-        thoughts.Add(thought);
-        EnforceLimit();
-
-        OnThoughtAdded?.Invoke(thought);
-
-        SaveConsciousnessSafe();
+        });
     }
 
-    public IReadOnlyList<ThoughtData> GetAllThoughts()
+    /// <summary>
+    /// Registra un pensamiento con texto plano (fallback para contenido no localizado).
+    /// Usar mientras el contenido no haya sido migrado a la tabla de localización.
+    /// </summary>
+    public void AddThoughtRaw(string rawText)
     {
-        return thoughts;
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            Debug.LogWarning("[ConsciousnessSystem] Se intentó agregar un pensamiento raw vacío.");
+            return;
+        }
+
+        AddThoughtInternal(new ThoughtData
+        {
+            RawText   = rawText,
+            Timestamp = Time.time
+        });
     }
+
+    public IReadOnlyList<ThoughtData> GetAllThoughts() => thoughts;
 
     public void Clear()
     {
@@ -85,6 +143,14 @@ public sealed class ConsciousnessSystem : MonoBehaviour
                 OnThoughtAdded?.Invoke(thought);
             }
         }
+    }
+
+    private void AddThoughtInternal(ThoughtData thought)
+    {
+        thoughts.Add(thought);
+        EnforceLimit();
+        OnThoughtAdded?.Invoke(thought);
+        SaveConsciousnessSafe();
     }
 
     private void EnforceLimit()

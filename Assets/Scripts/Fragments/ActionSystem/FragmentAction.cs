@@ -1,11 +1,20 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 using UnityEngine.Serialization;
 using Game.Conditions;
 using Game.Data;
 
 /// <summary>
 /// Contenedor serializable de parámetros para una acción de fragmento.
+///
+/// Estrategia de localización con retrocompatibilidad:
+/// - Los campos <c>string</c> originales (<c>text</c>, <c>dialogText</c>) se conservan
+///   para que no se pierdan los textos ya escritos en el Inspector.
+/// - Los campos <c>LocalizedString</c> (<c>localizedText</c>, <c>localizedDialogText</c>)
+///   son opcionales. Cuando están asignados tienen prioridad sobre los string planos.
+/// - Los handlers aplican la lógica: si LocalizedString está asignado → ruta localizada;
+///   si no → ruta raw (string plano directo).
 /// </summary>
 [System.Serializable]
 public class FragmentAction
@@ -95,9 +104,13 @@ public class FragmentAction
     [Tooltip("Velocidad de reproducción de las huellas.")]
     [SerializeField, Range(0f, 3f)] private float footprintSpeed = 1f;
 
+    [Header("Thought — Texto del pensamiento")]
     [TextArea]
-    [Tooltip("Texto libre usado por acciones legacy o de pensamiento.")]
+    [Tooltip("Texto del pensamiento (fallback). Se usa cuando Localized Text no está asignado.")]
     [SerializeField] private string text;
+
+    [Tooltip("(Opcional) Clave de localización del pensamiento. Si está asignada, tiene prioridad sobre el texto de arriba.")]
+    [SerializeField] private LocalizedString localizedText;
 
     [Header("Condiciones opcionales")]
     [Tooltip("Si no se cumplen, la acción se omite.")]
@@ -113,8 +126,11 @@ public class FragmentAction
 
     [Header("Dialog System")]
     [TextArea]
-    [Tooltip("Texto del diálogo.")]
+    [Tooltip("Texto del diálogo (fallback). Se usa cuando Localized Dialog Text no está asignado.")]
     [SerializeField] private string dialogText;
+
+    [Tooltip("(Opcional) Clave de localización del diálogo. Si está asignada, tiene prioridad sobre el texto de arriba.")]
+    [SerializeField] private LocalizedString localizedDialogText;
 
     [Tooltip("Controller que maneja el diálogo.")]
     [SerializeField] private DialogueController dialogController;
@@ -219,11 +235,23 @@ public class FragmentAction
     public bool UseHalfFootprintAnimation => useHalfFootprintAnimation;
     public FootprintPathController FootprintPathController => footprintPathController;
     public float FootprintSpeed => footprintSpeed;
+
+    /// <summary>Texto plano del pensamiento (fallback si LocalizedText no está asignado).</summary>
     public string Text => text;
+
+    /// <summary>Referencia de localización del pensamiento. Nulo o vacío = usar Text como fallback.</summary>
+    public LocalizedString LocalizedText => localizedText;
+
     public IReadOnlyList<ConditionGroup> Conditions => conditions;
     public InputType InputType => inputType;
     public KeyCode SpecificKey => specificKey;
+
+    /// <summary>Texto plano del diálogo (fallback si LocalizedDialogText no está asignado).</summary>
     public string DialogText => dialogText;
+
+    /// <summary>Referencia de localización del diálogo. Nulo o vacío = usar DialogText como fallback.</summary>
+    public LocalizedString LocalizedDialogText => localizedDialogText;
+
     public DialogueController DialogController => dialogController;
     public Transform DialogPoint => dialogPoint;
     public CinematicTargetMode CinematicTargetMode => cinematicTargetMode;
@@ -248,9 +276,6 @@ public class FragmentAction
     /// <summary>ID de la instrucción de tutorial a mostrar u ocultar.</summary>
     public string TutorialId => tutorialId;
 
-    /// <summary>
-    /// Desplazamiento vertical del panel de tutorial.
-    /// Permite reposicionarlo para evitar que tape elementos de UI.
-    /// </summary>
+    /// <summary>Desplazamiento vertical del panel de tutorial.</summary>
     public float TutorialOffsetY => tutorialOffsetY;
 }

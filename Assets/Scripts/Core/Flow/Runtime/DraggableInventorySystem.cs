@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 using UnityEngine.SceneManagement;
 using Game.Data;
 using Game.Save;
@@ -32,9 +33,7 @@ namespace Game.Runtime
 
         private DraggableInventoryRuntimeData inventory;
 
-        /// <summary>
-        /// Runtime del inventario draggable.
-        /// </summary>
+        /// <summary>Runtime del inventario draggable.</summary>
         public DraggableInventoryRuntimeData Inventory => inventory;
 
         private void Awake()
@@ -85,9 +84,11 @@ namespace Game.Runtime
             }
         }
 
-        /// <summary>
-        /// Obtiene el runtime de un item por definición.
-        /// </summary>
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Queries
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Obtiene el runtime de un item por definición.</summary>
         public DraggableItemRuntimeData GetItem(DraggableItemDefinition definition)
         {
             if (definition == null || string.IsNullOrWhiteSpace(definition.Id))
@@ -99,9 +100,7 @@ namespace Game.Runtime
             return item;
         }
 
-        /// <summary>
-        /// Obtiene el runtime de un item por ID.
-        /// </summary>
+        /// <summary>Obtiene el runtime de un item por ID.</summary>
         public DraggableItemRuntimeData GetItem(string itemId)
         {
             if (string.IsNullOrWhiteSpace(itemId))
@@ -113,13 +112,8 @@ namespace Game.Runtime
             return item;
         }
 
-        /// <summary>
-        /// Devuelve todos los items runtime.
-        /// </summary>
-        public IEnumerable<DraggableItemRuntimeData> GetAllItems()
-        {
-            return itemsById.Values;
-        }
+        /// <summary>Devuelve todos los items runtime.</summary>
+        public IEnumerable<DraggableItemRuntimeData> GetAllItems() => itemsById.Values;
 
         /// <summary>
         /// Devuelve true si el item ya existe runtime en un estado distinto de NotSpawned.
@@ -130,96 +124,23 @@ namespace Game.Runtime
             return item != null && item.CurrentState != DraggableItemState.NotSpawned;
         }
 
-        /// <summary>
-        /// Intenta spawnear el primer item disponible de la lista en el punto indicado.
-        /// Recorre la lista en orden y se detiene en el primer candidato válido.
-        /// No emite pensamientos fallback porque esto se considera flujo backend.
-        /// </summary>
-        public bool TrySpawnFirstAvailableItem(IReadOnlyList<DraggableItemDefinition> candidates, Transform spawnPoint)
+        public bool IsItemFinalized(string itemId)
         {
-            if (candidates == null || candidates.Count == 0)
-            {
-                Debug.LogWarning("[DraggableInventorySystem] TrySpawnFirstAvailableItem -> lista vacía.", this);
-                return false;
-            }
-
-            if (spawnPoint == null)
-            {
-                Debug.LogWarning("[DraggableInventorySystem] TrySpawnFirstAvailableItem -> spawnPoint null.", this);
-                return false;
-            }
-
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                DraggableItemDefinition definition = candidates[i];
-
-                if (definition == null)
-                {
-                    continue;
-                }
-
-                DraggableItemRuntimeData item = GetItem(definition);
-                if (item == null)
-                {
-                    Debug.LogWarning(
-                        $"[DraggableInventorySystem] TrySpawnFirstAvailableItem -> no existe runtime para {definition.name}.",
-                        this);
-                    continue;
-                }
-
-                if (item.CurrentState != DraggableItemState.NotSpawned)
-                {
-                    Log(
-                        $"TrySpawnFirstAvailableItem -> skip {definition.Id} | " +
-                        $"State: {item.CurrentState}");
-                    continue;
-                }
-
-                if (definition.WorldPrefab == null)
-                {
-                    Debug.LogWarning(
-                        $"[DraggableInventorySystem] TrySpawnFirstAvailableItem -> WorldPrefab null para {definition.Id}.",
-                        this);
-                    continue;
-                }
-
-                bool registered = TryRegisterSpawnedInWorld(definition, spawnPoint.position);
-                if (!registered)
-                {
-                    continue;
-                }
-
-                GameObject instance = Instantiate(
-                    definition.WorldPrefab,
-                    spawnPoint.position,
-                    spawnPoint.rotation);
-
-                DraggableItemWorldInstance worldInstance = instance.GetComponent<DraggableItemWorldInstance>();
-
-                if (worldInstance == null)
-                {
-                    worldInstance = instance.AddComponent<DraggableItemWorldInstance>();
-                }
-
-                worldInstance.Initialize(definition, false);
-                worldInstance.ConfigureAsWorldItem();
-
-                sceneInstancesByItemId[definition.Id] = worldInstance;
-
-                Log($"TrySpawnFirstAvailableItem -> spawned {definition.Id} at {spawnPoint.position}");
-
-                RaiseItemChanged(item);
-                RaiseInventoryChanged();
-                return true;
-            }
-
-            Log("TrySpawnFirstAvailableItem -> no candidate could be spawned.");
-            return false;
+            DraggableItemRuntimeData item = GetItem(itemId);
+            return item != null && item.IsFinalized;
         }
 
-        /// <summary>
-        /// Registra una instancia visual de mundo.
-        /// </summary>
+        public bool IsSlotResolved(string slotId)
+        {
+            FragmentDraggableSlotRuntimeData slot = GetSlotRuntime(slotId);
+            return slot != null && slot.IsResolved;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — World Instance Registration
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Registra una instancia visual de mundo.</summary>
         public void RegisterWorldInstance(DraggableItemWorldInstance instance)
         {
             Log(
@@ -290,30 +211,18 @@ namespace Game.Runtime
                     break;
 
                 case DraggableItemState.InInventory:
-                    instance.gameObject.SetActive(false);
-                    break;
-
                 case DraggableItemState.Held:
                     instance.gameObject.SetActive(false);
                     break;
 
                 case DraggableItemState.InFragmentSlot:
                 case DraggableItemState.Finalized:
-                    if (instance.OwningSlotId == item.CurrentFragmentSlotId)
-                    {
-                        instance.gameObject.SetActive(true);
-                    }
-                    else
-                    {
-                        instance.gameObject.SetActive(false);
-                    }
+                    instance.gameObject.SetActive(instance.OwningSlotId == item.CurrentFragmentSlotId);
                     break;
             }
         }
 
-        /// <summary>
-        /// Desregistra una instancia visual de mundo.
-        /// </summary>
+        /// <summary>Desregistra una instancia visual de mundo.</summary>
         public void UnregisterWorldInstance(DraggableItemWorldInstance instance)
         {
             if (instance == null || instance.ItemDefinition == null)
@@ -328,9 +237,11 @@ namespace Game.Runtime
             }
         }
 
-        /// <summary>
-        /// Registra un slot físico de escena.
-        /// </summary>
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Scene Slot Registration
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Registra un slot físico de escena.</summary>
         public void RegisterSceneSlot(FragmentDraggableSlot slot)
         {
             if (slot == null || string.IsNullOrWhiteSpace(slot.SlotId))
@@ -341,9 +252,7 @@ namespace Game.Runtime
             sceneSlotsById[slot.SlotId] = slot;
         }
 
-        /// <summary>
-        /// Desregistra un slot físico de escena.
-        /// </summary>
+        /// <summary>Desregistra un slot físico de escena.</summary>
         public void UnregisterSceneSlot(FragmentDraggableSlot slot)
         {
             if (slot == null || string.IsNullOrWhiteSpace(slot.SlotId))
@@ -356,6 +265,10 @@ namespace Game.Runtime
                 sceneSlotsById.Remove(slot.SlotId);
             }
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Spawn
+        // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
         /// Intenta registrar un item como presente en mundo.
@@ -380,8 +293,80 @@ namespace Game.Runtime
         }
 
         /// <summary>
-        /// Intenta recoger un objeto visual de mundo o slot incorrecto.
+        /// Intenta spawnear el primer item disponible de la lista en el punto indicado.
         /// </summary>
+        public bool TrySpawnFirstAvailableItem(IReadOnlyList<DraggableItemDefinition> candidates, Transform spawnPoint)
+        {
+            if (candidates == null || candidates.Count == 0)
+            {
+                Debug.LogWarning("[DraggableInventorySystem] TrySpawnFirstAvailableItem -> lista vacía.", this);
+                return false;
+            }
+
+            if (spawnPoint == null)
+            {
+                Debug.LogWarning("[DraggableInventorySystem] TrySpawnFirstAvailableItem -> spawnPoint null.", this);
+                return false;
+            }
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                DraggableItemDefinition definition = candidates[i];
+
+                if (definition == null)
+                {
+                    continue;
+                }
+
+                DraggableItemRuntimeData item = GetItem(definition);
+                if (item == null)
+                {
+                    Debug.LogWarning(
+                        $"[DraggableInventorySystem] TrySpawnFirstAvailableItem -> no existe runtime para {definition.name}.",
+                        this
+                    );
+                    continue;
+                }
+
+                if (item.CurrentState != DraggableItemState.NotSpawned)
+                {
+                    Log($"TrySpawnFirstAvailableItem -> skipping {definition.Id}, state: {item.CurrentState}");
+                    continue;
+                }
+
+                if (definition.WorldPrefab == null)
+                {
+                    Debug.LogWarning(
+                        $"[DraggableInventorySystem] TrySpawnFirstAvailableItem -> WorldPrefab null para {definition.Id}.",
+                        this
+                    );
+                    continue;
+                }
+
+                GameObject spawnedGo = Instantiate(definition.WorldPrefab, spawnPoint.position, spawnPoint.rotation);
+                DraggableItemWorldInstance spawnedInstance = spawnedGo.GetComponent<DraggableItemWorldInstance>();
+
+                if (spawnedInstance != null)
+                {
+                    spawnedInstance.Initialize(definition, false);
+                }
+
+                item.SetInWorld(spawnPoint.position, SceneManager.GetActiveScene().name);
+                RaiseItemChanged(item);
+                RaiseInventoryChanged();
+
+                Log($"TrySpawnFirstAvailableItem -> spawned {definition.Id}");
+                return true;
+            }
+
+            return false;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Pickup
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Intenta recoger un objeto visual de mundo o slot incorrecto.</summary>
         public bool TryPickupWorldInstance(DraggableItemWorldInstance instance)
         {
             Log(
@@ -410,10 +395,7 @@ namespace Game.Runtime
             if (item.CurrentState == DraggableItemState.NotSpawned && instance.IsSceneAuthored)
             {
                 item.SetInWorld(instance.transform.position, SceneManager.GetActiveScene().name);
-
-                Log(
-                    $"Pickup hot-fix -> Scene-authored item was NotSpawned, promoted to InWorld -> {item.Definition.Id}"
-                );
+                Log($"Pickup hot-fix -> Scene-authored item was NotSpawned, promoted to InWorld -> {item.Definition.Id}");
             }
 
             switch (item.CurrentState)
@@ -433,7 +415,6 @@ namespace Game.Runtime
                     }
 
                     Destroy(instance.gameObject);
-
                     Log($"Added to inventory -> {item.Definition.Id}");
 
                     RaiseItemChanged(item);
@@ -441,42 +422,42 @@ namespace Game.Runtime
                     return true;
 
                 case DraggableItemState.InFragmentSlot:
+                {
+                    FragmentDraggableSlot sceneSlot = GetSceneSlot(item.CurrentFragmentSlotId);
+                    FragmentDraggableSlotRuntimeData slotRuntime = GetSlotRuntime(item.CurrentFragmentSlotId);
+
+                    if (slotRuntime == null || slotRuntime.CurrentState != FragmentDraggableSlotState.OccupiedWrong)
                     {
-                        FragmentDraggableSlot sceneSlot = GetSceneSlot(item.CurrentFragmentSlotId);
-                        FragmentDraggableSlotRuntimeData slotRuntime = GetSlotRuntime(item.CurrentFragmentSlotId);
-
-                        if (slotRuntime == null || slotRuntime.CurrentState != FragmentDraggableSlotState.OccupiedWrong)
-                        {
-                            return false;
-                        }
-
-                        if (!inventory.TryAddItem(item))
-                        {
-                            Debug.LogWarning(
-                                $"[DraggableInventorySystem] Inventory full while retrieving wrong placed item -> {item.Definition.Id}",
-                                this
-                            );
-
-                            PublishThought(DraggableInventoryThoughtBuilder.BuildInventoryFull());
-                            return false;
-                        }
-
-                        slotRuntime.Clear();
-
-                        if (sceneSlot != null)
-                        {
-                            sceneSlot.ClearOccupantVisual();
-                        }
-                        else
-                        {
-                            Destroy(instance.gameObject);
-                        }
-
-                        RaiseItemChanged(item);
-                        RaiseSlotChanged(slotRuntime);
-                        RaiseInventoryChanged();
-                        return true;
+                        return false;
                     }
+
+                    if (!inventory.TryAddItem(item))
+                    {
+                        Debug.LogWarning(
+                            $"[DraggableInventorySystem] Inventory full while retrieving wrong placed item -> {item.Definition.Id}",
+                            this
+                        );
+
+                        PublishThought(DraggableInventoryThoughtBuilder.BuildInventoryFull());
+                        return false;
+                    }
+
+                    slotRuntime.Clear();
+
+                    if (sceneSlot != null)
+                    {
+                        sceneSlot.ClearOccupantVisual();
+                    }
+                    else
+                    {
+                        Destroy(instance.gameObject);
+                    }
+
+                    RaiseItemChanged(item);
+                    RaiseSlotChanged(slotRuntime);
+                    RaiseInventoryChanged();
+                    return true;
+                }
 
                 case DraggableItemState.Finalized:
                     PublishThought(DraggableInventoryThoughtBuilder.BuildFinalizedItemLocked());
@@ -491,10 +472,11 @@ namespace Game.Runtime
             }
         }
 
-        /// <summary>
-        /// Intenta comenzar la selección lógica desde un slot de inventario.
-        /// En esta entrega no se usa visual en mano.
-        /// </summary>
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Carry
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Intenta comenzar la selección lógica desde un slot de inventario.</summary>
         public bool TryBeginCarryFromInventorySlot(int slotIndex)
         {
             Log($"TryBeginCarryFromInventorySlot -> Slot {slotIndex}");
@@ -528,8 +510,6 @@ namespace Game.Runtime
                 return false;
             }
 
-            // No se usa en esta entrega representación visual del objeto en mano.
-            // El item queda solamente en estado lógico Held.
             Log($"Carry logical-only started -> {item.Definition.Id}");
 
             RaiseItemChanged(item);
@@ -537,9 +517,7 @@ namespace Game.Runtime
             return true;
         }
 
-        /// <summary>
-        /// Cancela el item en mano y lo devuelve al inventario.
-        /// </summary>
+        /// <summary>Cancela el item en mano y lo devuelve al inventario.</summary>
         public bool CancelHeldItemAndReturnToInventory()
         {
             Log("CancelHeldItemAndReturnToInventory");
@@ -551,7 +529,6 @@ namespace Game.Runtime
 
             if (DraggableCarryController.Instance != null)
             {
-                // No se usa en esta entrega representación visual del objeto en mano.
                 DraggableCarryController.Instance.ClearCarryVisual();
             }
 
@@ -573,15 +550,14 @@ namespace Game.Runtime
             return returned;
         }
 
-        /// <summary>
-        /// Intenta colocar el item en mano dentro de un slot físico.
-        /// </summary>
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Placement
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Intenta colocar el item en mano dentro de un slot físico.</summary>
         public bool TryPlaceHeldItemInSceneSlot(FragmentDraggableSlot sceneSlot)
         {
-            Log(
-                $"TryPlaceHeldItemInSceneSlot -> " +
-                $"Slot: {(sceneSlot != null ? sceneSlot.SlotId : "NULL")}"
-            );
+            Log($"TryPlaceHeldItemInSceneSlot -> Slot: {(sceneSlot != null ? sceneSlot.SlotId : "NULL")}");
 
             if (sceneSlot == null)
             {
@@ -637,7 +613,6 @@ namespace Game.Runtime
 
             if (DraggableCarryController.Instance != null)
             {
-                // No se usa en esta entrega representación visual del objeto en mano.
                 carryVisual = DraggableCarryController.Instance.ConsumeCarryVisual();
             }
 
@@ -694,9 +669,7 @@ namespace Game.Runtime
             return true;
         }
 
-        /// <summary>
-        /// Intenta devolver al inventario un objeto incorrectamente colocado en un slot físico.
-        /// </summary>
+        /// <summary>Intenta devolver al inventario un objeto incorrectamente colocado en un slot físico.</summary>
         public bool TryReturnWrongPlacedItemToInventory(FragmentDraggableSlot sceneSlot)
         {
             if (sceneSlot == null)
@@ -736,17 +709,9 @@ namespace Game.Runtime
             return true;
         }
 
-        public bool IsItemFinalized(string itemId)
-        {
-            DraggableItemRuntimeData item = GetItem(itemId);
-            return item != null && item.IsFinalized;
-        }
-
-        public bool IsSlotResolved(string slotId)
-        {
-            FragmentDraggableSlotRuntimeData slot = GetSlotRuntime(slotId);
-            return slot != null && slot.IsResolved;
-        }
+        // ─────────────────────────────────────────────────────────────────────
+        // Public API — Save / Restore
+        // ─────────────────────────────────────────────────────────────────────
 
         public void NormalizeBeforeSave()
         {
@@ -812,6 +777,10 @@ namespace Game.Runtime
             StartCoroutine(DelayedSyncScenePresentation());
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // Private — Scene Sync
+        // ─────────────────────────────────────────────────────────────────────
+
         private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             StartCoroutine(DelayedSyncScenePresentation());
@@ -826,71 +795,18 @@ namespace Game.Runtime
         {
             yield return null;
 
-            SyncLooseWorldItemsForActiveScene();
-            SyncRegisteredSlotsForActiveScene();
-            RaiseInventoryChanged();
-        }
-
-        private void SyncLooseWorldItemsForActiveScene()
-        {
-            string currentScene = SceneManager.GetActiveScene().name;
-
-            foreach (DraggableItemRuntimeData item in itemsById.Values)
+            foreach (KeyValuePair<string, DraggableItemWorldInstance> pair in sceneInstancesByItemId)
             {
-                if (item == null || item.Definition == null)
+                if (pair.Value != null)
                 {
-                    continue;
+                    RegisterWorldInstance(pair.Value);
                 }
-
-                if (item.CurrentState != DraggableItemState.InWorld)
-                {
-                    continue;
-                }
-
-                if (item.CurrentSceneName != currentScene)
-                {
-                    continue;
-                }
-
-                if (sceneInstancesByItemId.TryGetValue(item.Definition.Id, out DraggableItemWorldInstance existing) &&
-                    existing != null)
-                {
-                    existing.transform.position = item.WorldPosition;
-                    existing.ConfigureAsWorldItem();
-                    existing.gameObject.SetActive(true);
-                    continue;
-                }
-
-                if (item.Definition.WorldPrefab == null)
-                {
-                    continue;
-                }
-
-                GameObject instance = Instantiate(item.Definition.WorldPrefab, item.WorldPosition, Quaternion.identity);
-                DraggableItemWorldInstance worldInstance = instance.GetComponent<DraggableItemWorldInstance>();
-
-                if (worldInstance == null)
-                {
-                    worldInstance = instance.AddComponent<DraggableItemWorldInstance>();
-                }
-
-                worldInstance.Initialize(item.Definition, false);
-                worldInstance.ConfigureAsWorldItem();
-
-                sceneInstancesByItemId[item.Definition.Id] = worldInstance;
             }
         }
 
-        private void SyncRegisteredSlotsForActiveScene()
-        {
-            foreach (FragmentDraggableSlot slot in sceneSlotsById.Values)
-            {
-                if (slot != null)
-                {
-                    slot.SyncVisualFromRuntime();
-                }
-            }
-        }
+        // ─────────────────────────────────────────────────────────────────────
+        // Private — Helpers
+        // ─────────────────────────────────────────────────────────────────────
 
         private FragmentDraggableSlotRuntimeData GetSlotRuntime(string slotId)
         {
@@ -905,12 +821,26 @@ namespace Game.Runtime
             return slot;
         }
 
-        private void PublishThought(string text)
+        /// <summary>
+        /// Registra un pensamiento de feedback en el sistema de consciencia usando
+        /// una referencia de localización, de modo que el texto se resuelva al idioma activo.
+        /// </summary>
+        private void PublishThought(LocalizedString localizedString)
         {
-            if (ConsciousnessSystem.Instance != null && !string.IsNullOrWhiteSpace(text))
+            if (ConsciousnessSystem.Instance == null || localizedString == null)
             {
-                ConsciousnessSystem.Instance.AddThought(text);
+                return;
             }
+
+            string tableName = localizedString.TableReference.TableCollectionName;
+            string key       = localizedString.TableEntryReference.Key;
+
+            if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            ConsciousnessSystem.Instance.AddThought(tableName, key);
         }
 
         private void RaiseItemChanged(DraggableItemRuntimeData item)

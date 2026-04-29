@@ -1,17 +1,24 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 using Game.Data;
 using Game;
 
 namespace Game.Runtime
 {
     /// <summary>
-    /// Resuelve el texto final de una notificación narrativa.
+    /// Resuelve la referencia de localización final de una notificación narrativa.
+    ///
     /// Prioridad:
-    /// 1. Mensaje específico por condición.
-    /// 2. Mensaje genérico aleatorio por tipo.
-    /// 3. Mensaje recibido directamente en la notificación.
-    /// 4. Fallback interno en inglés.
+    /// 1. Mensaje específico por condición (desde <see cref="NarrativeNotificationLibrary"/>).
+    /// 2. Mensaje genérico aleatorio por tipo (desde la biblioteca).
+    /// 3. <c>null</c> — los mensajes dinámicos con EntityId no son localizables
+    ///    de forma estática; el Bridge los descarta para no persistir texto sin clave.
+    ///
+    /// Razón del diseño: los fallback originales contenían datos dinámicos como
+    /// <c>message.EntityId</c>. Persistir ese texto en el sistema de consciencia
+    /// rompería la localización al cambiar de idioma. Se descarta conscientemente
+    /// en lugar de guardar texto ilocalizable.
     /// </summary>
     public sealed class NarrativeNotificationResolver : MonoBehaviour
     {
@@ -20,9 +27,10 @@ namespace Game.Runtime
         private NarrativeNotificationLibrary notificationLibrary;
 
         /// <summary>
-        /// Resuelve el texto final para una notificación dada.
+        /// Resuelve la referencia de localización para una notificación dada.
+        /// Devuelve <c>null</c> si no existe una entrada localizable para este mensaje.
         /// </summary>
-        public string ResolveMessage(
+        public LocalizedString ResolveMessage(
             UnlockNotificationMessage message,
             RuntimeContext runtimeContext)
         {
@@ -30,46 +38,42 @@ namespace Game.Runtime
                 notificationLibrary.TryGetSpecificMessage(
                     message,
                     runtimeContext,
-                    out string specificMessage) &&
-                !string.IsNullOrWhiteSpace(specificMessage))
+                    out LocalizedString specificMessage) &&
+                specificMessage != null &&
+                !specificMessage.IsEmpty)
             {
                 return specificMessage;
             }
 
-            string configuredMessage = TryGetRandomConfiguredMessage(message.NotificationType);
+            LocalizedString configuredMessage = TryGetRandomConfiguredMessage(message.NotificationType);
 
-            if (!string.IsNullOrWhiteSpace(configuredMessage))
+            if (configuredMessage != null && !configuredMessage.IsEmpty)
             {
                 return configuredMessage;
             }
 
-            if (!string.IsNullOrWhiteSpace(message.DisplayMessage))
-            {
-                return message.DisplayMessage;
-            }
-
-            return BuildFallback(message);
+            return null;
         }
 
-        private string TryGetRandomConfiguredMessage(NarrativeNotificationType type)
+        private LocalizedString TryGetRandomConfiguredMessage(NarrativeNotificationType type)
         {
             if (notificationLibrary == null)
             {
-                return string.Empty;
+                return null;
             }
 
-            IReadOnlyList<string> messages = notificationLibrary.GetMessages(type);
+            IReadOnlyList<LocalizedString> messages = notificationLibrary.GetMessages(type);
 
             if (messages == null || messages.Count == 0)
             {
-                return string.Empty;
+                return null;
             }
 
-            List<string> validMessages = new();
+            List<LocalizedString> validMessages = new();
 
             for (int i = 0; i < messages.Count; i++)
             {
-                if (!string.IsNullOrWhiteSpace(messages[i]))
+                if (messages[i] != null && !messages[i].IsEmpty)
                 {
                     validMessages.Add(messages[i]);
                 }
@@ -77,29 +81,10 @@ namespace Game.Runtime
 
             if (validMessages.Count == 0)
             {
-                return string.Empty;
+                return null;
             }
 
-            int randomIndex = Random.Range(0, validMessages.Count);
-            return validMessages[randomIndex];
-        }
-
-        private string BuildFallback(UnlockNotificationMessage message)
-        {
-            return message.NotificationType switch
-            {
-                NarrativeNotificationType.FragmentUnlocked =>
-                    $"A memory fragment has become clearer: {message.MemoryId}.",
-
-                NarrativeNotificationType.ObjectUnlocked =>
-                    $"Something connected to this memory has become clearer: {message.EntityId}.",
-
-                NarrativeNotificationType.StateAvailable =>
-                    $"Something has changed. I may be able to understand {message.EntityId} differently now.",
-
-                _ =>
-                    "Something in my memory seems to have become a little clearer."
-            };
+            return validMessages[Random.Range(0, validMessages.Count)];
         }
     }
 }

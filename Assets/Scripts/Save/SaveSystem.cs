@@ -21,24 +21,18 @@ namespace Game.Save
 
         #region Properties
 
-        /// <summary>
-        /// Ruta absoluta del archivo de guardado.
-        /// </summary>
+        /// <summary>Ruta absoluta del archivo de guardado.</summary>
         private static string SavePath =>
             Path.Combine(Application.persistentDataPath, "save.json");
 
-        /// <summary>
-        /// Indica si existe un save cargado en memoria y disponible para aplicar a escenas.
-        /// </summary>
+        /// <summary>Indica si existe un save cargado en memoria y disponible para aplicar a escenas.</summary>
         public static bool HasLoadedData => cachedLoadedData != null;
 
         #endregion
 
         #region Public API
 
-        /// <summary>
-        /// Guarda el estado completo actual del juego.
-        /// </summary>
+        /// <summary>Guarda el estado completo actual del juego.</summary>
         public static void SaveGame()
         {
             GameStateRepository repository = GameStateRepository.Instance;
@@ -63,8 +57,8 @@ namespace Game.Save
             {
                 MemorySaveData memoryData = new MemorySaveData
                 {
-                    id = memory.Definition.Id,
-                    state = (int)memory.CurrentState,
+                    id       = memory.Definition.Id,
+                    state    = (int)memory.CurrentState,
                     hasAlert = memory.HasNewContentAlert
                 };
 
@@ -72,8 +66,8 @@ namespace Game.Save
                 {
                     ObjectSaveData objectData = new ObjectSaveData
                     {
-                        id = obj.Definition.Id,
-                        stateIndex = obj.GetStateIndex(),
+                        id                  = obj.Definition.Id,
+                        stateIndex          = obj.GetStateIndex(),
                         hasPendingTransition = obj.GetHasPendingTransition()
                     };
 
@@ -87,8 +81,8 @@ namespace Game.Save
                         objectData.runtimeEmotions.Add(new RuntimeEmotionSaveData
                         {
                             stateIndex = emotionPair.Key,
-                            emotion = (int)emotionPair.Value.Emotion,
-                            intensity = (int)emotionPair.Value.Intensity
+                            emotion    = (int)emotionPair.Value.Emotion,
+                            intensity  = (int)emotionPair.Value.Intensity
                         });
                     }
 
@@ -96,7 +90,7 @@ namespace Game.Save
                     {
                         objectData.acts.Add(new ActSaveData
                         {
-                            id = actPair.Key,
+                            id          = actPair.Key,
                             hasExecuted = actPair.Value.hasExecuted
                         });
                     }
@@ -107,11 +101,11 @@ namespace Game.Save
 
                         objectData.worldStates.Add(new ObjectWorldStateSaveData
                         {
-                            id = worldPair.Key,
-                            hasVisible = state.visible.HasValue,
-                            visible = state.visible.GetValueOrDefault(),
+                            id                 = worldPair.Key,
+                            hasVisible         = state.visible.HasValue,
+                            visible            = state.visible.GetValueOrDefault(),
                             hasColliderEnabled = state.colliderEnabled.HasValue,
-                            colliderEnabled = state.colliderEnabled.GetValueOrDefault()
+                            colliderEnabled    = state.colliderEnabled.GetValueOrDefault()
                         });
                     }
 
@@ -121,10 +115,10 @@ namespace Game.Save
                 data.memories.Add(memoryData);
             }
 
-            data.connections = repository.GetAllConnectionKeys();
-            data.drops = progress.drops;
+            data.connections      = repository.GetAllConnectionKeys();
+            data.drops            = progress.drops;
             data.tutorialProgress = progress.tutorialProgress ?? new TutorialProgressData();
-            data.consciousness = BuildConsciousnessSaveData();
+            data.consciousness    = BuildConsciousnessSaveData();
 
             BuildDraggableSaveData(data);
             BuildSceneWorldObjectSaveData(data);
@@ -240,7 +234,7 @@ namespace Game.Save
                 repository.RestoreConnection(key);
             }
 
-            progress.drops = data.drops ?? new List<DropData>();
+            progress.drops            = data.drops ?? new List<DropData>();
             progress.tutorialProgress = data.tutorialProgress ?? new TutorialProgressData();
 
             SyncDropConnectionsWithRepository(progress, repository);
@@ -251,19 +245,13 @@ namespace Game.Save
             Debug.Log("[SAVE] Game Loaded");
         }
 
-        /// <summary>
-        /// Aplica el estado persistido a todos los <see cref="PersistentWorldObject"/> de la escena activa.
-        /// Debe llamarse después de cargar una escena.
-        /// </summary>
+        /// <summary>Aplica el estado persistido a todos los PersistentWorldObject de la escena activa.</summary>
         public static void ApplyLoadedSceneWorldObjects()
         {
             ApplySceneWorldObjectSaveData(cachedLoadedData);
         }
 
-        /// <summary>
-        /// Intenta aplicar el estado persistido a un único objeto recién activado o instanciado.
-        /// </summary>
-        /// <param name="worldObject">Objeto persistente destino.</param>
+        /// <summary>Intenta aplicar el estado persistido a un único objeto recién activado o instanciado.</summary>
         public static void TryApplyToPersistentWorldObject(PersistentWorldObject worldObject)
         {
             if (worldObject == null || cachedLoadedData == null || cachedLoadedData.sceneWorldObjects == null)
@@ -272,7 +260,7 @@ namespace Game.Save
             }
 
             string activeSceneName = worldObject.gameObject.scene.name;
-            string worldObjectId = worldObject.WorldObjectIdValue;
+            string worldObjectId   = worldObject.WorldObjectIdValue;
 
             if (string.IsNullOrWhiteSpace(activeSceneName) || string.IsNullOrWhiteSpace(worldObjectId))
             {
@@ -287,12 +275,7 @@ namespace Game.Save
                     continue;
                 }
 
-                if (savedObject.sceneName != activeSceneName)
-                {
-                    continue;
-                }
-
-                if (savedObject.worldObjectId != worldObjectId)
+                if (savedObject.sceneName != activeSceneName || savedObject.worldObjectId != worldObjectId)
                 {
                     continue;
                 }
@@ -302,9 +285,7 @@ namespace Game.Save
             }
         }
 
-        /// <summary>
-        /// Elimina el archivo de guardado actual.
-        /// </summary>
+        /// <summary>Elimina el archivo de guardado actual.</summary>
         public static void DeleteSave()
         {
             if (File.Exists(SavePath))
@@ -316,9 +297,7 @@ namespace Game.Save
             Debug.Log("[SAVE] Save file deleted");
         }
 
-        /// <summary>
-        /// Resetea el runtime y elimina cualquier persistencia almacenada.
-        /// </summary>
+        /// <summary>Resetea el runtime y elimina cualquier persistencia almacenada.</summary>
         public static void ResetGame()
         {
             DeleteSave();
@@ -349,9 +328,6 @@ namespace Game.Save
 
         #region Private Methods
 
-        /// <summary>
-        /// Busca una definición de memoria por id.
-        /// </summary>
         private static MemoryDefinition FindMemoryDefinition(string id)
         {
             MemoryDefinition[] all = Resources.FindObjectsOfTypeAll<MemoryDefinition>();
@@ -367,9 +343,6 @@ namespace Game.Save
             return null;
         }
 
-        /// <summary>
-        /// Busca una definición de objeto dentro de una memoria.
-        /// </summary>
         private static ObjectDefinition FindObjectDefinition(MemoryDefinition memory, string id)
         {
             if (memory == null || memory.Objects == null)
@@ -388,9 +361,6 @@ namespace Game.Save
             return null;
         }
 
-        /// <summary>
-        /// Sincroniza las conexiones de drops con el repositorio central.
-        /// </summary>
         private static void SyncDropConnectionsWithRepository(FragmentProgressData progress, GameStateRepository repository)
         {
             if (progress == null || repository == null)
@@ -410,7 +380,8 @@ namespace Game.Save
         }
 
         /// <summary>
-        /// Construye el bloque serializable del sistema de conciencia.
+        /// Construye el bloque serializable del sistema de consciencia.
+        /// Soporta dos rutas: localizada (tableName + key) y raw (rawText fallback).
         /// </summary>
         private static ConsciousnessSaveData BuildConsciousnessSaveData()
         {
@@ -421,22 +392,38 @@ namespace Game.Save
                 return data;
             }
 
-            IReadOnlyList<ConsciousnessSystem.ThoughtData> thoughts = ConsciousnessSystem.Instance.GetAllThoughts();
+            IReadOnlyList<ConsciousnessSystem.ThoughtData> thoughts =
+                ConsciousnessSystem.Instance.GetAllThoughts();
 
             for (int i = 0; i < thoughts.Count; i++)
             {
-                data.thoughts.Add(new ThoughtSaveData
+                ConsciousnessSystem.ThoughtData thought = thoughts[i];
+
+                if (thought.IsLocalized)
                 {
-                    text = thoughts[i].Text,
-                    timestamp = thoughts[i].Timestamp
-                });
+                    data.thoughts.Add(new ThoughtSaveData
+                    {
+                        tableName = thought.TableName,
+                        key       = thought.Key,
+                        timestamp = thought.Timestamp
+                    });
+                }
+                else if (!string.IsNullOrWhiteSpace(thought.RawText))
+                {
+                    data.thoughts.Add(new ThoughtSaveData
+                    {
+                        rawText   = thought.RawText,
+                        timestamp = thought.Timestamp
+                    });
+                }
             }
 
             return data;
         }
 
         /// <summary>
-        /// Restaura el historial persistido del sistema de conciencia.
+        /// Restaura el historial persistido del sistema de consciencia.
+        /// Soporta saves localizados (tableName + key) y saves raw legacy (rawText).
         /// </summary>
         private static void RestoreConsciousness(ConsciousnessSaveData data)
         {
@@ -451,20 +438,31 @@ namespace Game.Save
             {
                 for (int i = 0; i < data.thoughts.Count; i++)
                 {
-                    restored.Add(new ConsciousnessSystem.ThoughtData
+                    ThoughtSaveData saved = data.thoughts[i];
+
+                    if (saved.IsLocalized)
                     {
-                        Text = data.thoughts[i].text,
-                        Timestamp = data.thoughts[i].timestamp
-                    });
+                        restored.Add(new ConsciousnessSystem.ThoughtData
+                        {
+                            TableName = saved.tableName,
+                            Key       = saved.key,
+                            Timestamp = saved.timestamp
+                        });
+                    }
+                    else if (!string.IsNullOrWhiteSpace(saved.rawText))
+                    {
+                        restored.Add(new ConsciousnessSystem.ThoughtData
+                        {
+                            RawText   = saved.rawText,
+                            Timestamp = saved.timestamp
+                        });
+                    }
                 }
             }
 
             ConsciousnessSystem.Instance.RestoreThoughts(restored, notifyListeners: false);
         }
 
-        /// <summary>
-        /// Construye el bloque serializable del sistema draggable.
-        /// </summary>
         private static void BuildDraggableSaveData(UnifiedSaveData data)
         {
             if (data == null || DraggableInventorySystem.Instance == null)
@@ -483,12 +481,12 @@ namespace Game.Save
 
                 data.draggableItems.Add(new DraggableItemSaveData
                 {
-                    id = item.Definition.Id,
-                    state = (int)item.CurrentState,
-                    inventorySlotIndex = item.InventorySlotIndex,
+                    id                    = item.Definition.Id,
+                    state                 = (int)item.CurrentState,
+                    inventorySlotIndex    = item.InventorySlotIndex,
                     currentFragmentSlotId = item.CurrentFragmentSlotId,
-                    currentSceneName = item.CurrentSceneName,
-                    worldPosition = item.WorldPosition
+                    currentSceneName      = item.CurrentSceneName,
+                    worldPosition         = item.WorldPosition
                 });
             }
 
@@ -500,7 +498,7 @@ namespace Game.Save
 
                     data.draggableInventory.slots.Add(new DraggableInventorySlotSaveData
                     {
-                        index = i,
+                        index  = i,
                         itemId = slotItem != null && slotItem.Definition != null
                             ? slotItem.Definition.Id
                             : string.Empty
@@ -521,17 +519,14 @@ namespace Game.Save
 
                     data.draggableFragmentSlots.Add(new FragmentDraggableSlotSaveData
                     {
-                        slotId = slot.SlotId,
-                        state = (int)slot.CurrentState,
+                        slotId        = slot.SlotId,
+                        state         = (int)slot.CurrentState,
                         currentItemId = slot.CurrentItemId
                     });
                 }
             }
         }
 
-        /// <summary>
-        /// Restaura el bloque serializado del sistema draggable.
-        /// </summary>
         private static void RestoreDraggableSaveData(UnifiedSaveData data)
         {
             if (data == null || DraggableInventorySystem.Instance == null)
@@ -545,9 +540,6 @@ namespace Game.Save
                 data.draggableFragmentSlots);
         }
 
-        /// <summary>
-        /// Serializa el estado de todos los objetos persistentes presentes en la escena activa.
-        /// </summary>
         private static void BuildSceneWorldObjectSaveData(UnifiedSaveData data)
         {
             if (data == null)
@@ -578,9 +570,6 @@ namespace Game.Save
             Debug.Log($"[SAVE] SceneWorldObjects serialized: {data.sceneWorldObjects.Count}");
         }
 
-        /// <summary>
-        /// Aplica a la escena activa el bloque persistido de objetos de mundo.
-        /// </summary>
         private static void ApplySceneWorldObjectSaveData(UnifiedSaveData data)
         {
             if (data == null || data.sceneWorldObjects == null || data.sceneWorldObjects.Count == 0)
@@ -627,12 +616,7 @@ namespace Game.Save
             {
                 SceneWorldObjectSaveData savedObject = data.sceneWorldObjects[i];
 
-                if (savedObject == null)
-                {
-                    continue;
-                }
-
-                if (savedObject.sceneName != activeSceneName)
+                if (savedObject == null || savedObject.sceneName != activeSceneName)
                 {
                     continue;
                 }

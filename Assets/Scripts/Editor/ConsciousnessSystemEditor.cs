@@ -1,53 +1,74 @@
+#if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
 
 /// <summary>
 /// Editor personalizado para <see cref="ConsciousnessSystem"/>.
-/// Permite inyectar pensamientos manualmente desde el Inspector en Play Mode.
+/// Permite inyectar pensamientos manualmente en Play Mode,
+/// tanto por texto plano (raw) como por tabla + clave de localización.
 /// </summary>
 [CustomEditor(typeof(ConsciousnessSystem))]
 public sealed class ConsciousnessSystemEditor : Editor
 {
-    /// <summary>
-    /// Texto de prueba enviado al sistema.
-    /// </summary>
-    private string testThought = string.Empty;
+    private string testRawText    = string.Empty;
+    private string testTableName  = "Tabla 1";
+    private string testKey        = string.Empty;
 
-    /// <summary>
-    /// Dibuja el inspector personalizado.
-    /// </summary>
     public override void OnInspectorGUI()
     {
         DrawDefaultInspector();
 
         RuntimeEditorGui.DrawSectionHeader("Testing de Conciencia");
-        RuntimeEditorGui.DrawInfo("Permite agregar pensamientos manualmente durante Play Mode.");
+        RuntimeEditorGui.DrawInfo("Inyecta pensamientos en Play Mode por texto plano o por clave de localización.");
 
         RuntimeEditorGui.SetRuntimeEnabled(true);
 
-        testThought = EditorGUILayout.TextField("Pensamiento", testThought);
+        // ── Raw ──────────────────────────────────────────────────────────────
+        EditorGUILayout.LabelField("Texto plano (raw)", EditorStyles.boldLabel);
+        testRawText = EditorGUILayout.TextField("Texto", testRawText);
 
-        if (GUILayout.Button("Agregar Pensamiento"))
+        if (GUILayout.Button("Agregar Raw"))
         {
-            AddTestThought();
+            AddRawThought();
+        }
+
+        EditorGUILayout.Space(6f);
+
+        // ── Localizado ───────────────────────────────────────────────────────
+        EditorGUILayout.LabelField("Localizado (tabla + clave)", EditorStyles.boldLabel);
+        testTableName = EditorGUILayout.TextField("Tabla", testTableName);
+        testKey       = EditorGUILayout.TextField("Clave", testKey);
+
+        if (GUILayout.Button("Agregar Localizado"))
+        {
+            AddLocalizedThought();
         }
 
         RuntimeEditorGui.ResetGuiEnabled();
     }
 
-    /// <summary>
-    /// Envía el pensamiento configurado al sistema runtime.
-    /// </summary>
-    private void AddTestThought()
+    private void AddRawThought()
     {
-        if (string.IsNullOrWhiteSpace(testThought))
+        if (string.IsNullOrWhiteSpace(testRawText))
         {
-            Debug.LogWarning("El pensamiento está vacío.");
+            Debug.LogWarning("[ConsciousnessSystemEditor] El texto está vacío.");
             return;
         }
 
-        ConsciousnessSystem consciousnessSystem = (ConsciousnessSystem)target;
-        consciousnessSystem.AddThought(testThought);
-        testThought = string.Empty;
+        ((ConsciousnessSystem)target).AddThoughtRaw(testRawText);
+        testRawText = string.Empty;
+    }
+
+    private void AddLocalizedThought()
+    {
+        if (string.IsNullOrWhiteSpace(testTableName) || string.IsNullOrWhiteSpace(testKey))
+        {
+            Debug.LogWarning("[ConsciousnessSystemEditor] Tabla o clave vacía.");
+            return;
+        }
+
+        ((ConsciousnessSystem)target).AddThought(testTableName, testKey);
+        testKey = string.Empty;
     }
 }
+#endif

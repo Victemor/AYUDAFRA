@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
 using Game;
 using Game.Core;
 using Game.Data;
@@ -11,7 +12,7 @@ namespace Game.Runtime
     public sealed class NarrativeNotificationToConsciousnessBridge : MonoBehaviour
     {
         [SerializeField]
-        [Tooltip("Resolver encargado de elegir el texto final del mensaje.")]
+        [Tooltip("Resolver encargado de elegir la referencia de localización del mensaje.")]
         private NarrativeNotificationResolver resolver;
 
         [SerializeField]
@@ -165,7 +166,7 @@ namespace Game.Runtime
 
                 if (!IsBlocked(message.NotificationType))
                 {
-                    ProcessNotification(message);
+                    yield return ProcessNotification(message);
                 }
 
                 yield return null;
@@ -174,40 +175,62 @@ namespace Game.Runtime
             pendingRoutine = null;
         }
 
-        private void ProcessNotification(UnlockNotificationMessage message)
+        /// <summary>
+        /// Obtiene la referencia de localización del resolver y la registra en el
+        /// sistema de consciencia. Si el resolver devuelve <c>null</c> (mensaje dinámico
+        /// sin clave estática), la notificación se descarta para preservar la integridad
+        /// del sistema de localización.
+        /// </summary>
+        private IEnumerator ProcessNotification(UnlockNotificationMessage message)
         {
             if (resolver == null)
             {
                 Debug.LogWarning("[NarrativeNotificationBridge] Resolver is not assigned.", this);
-                return;
+                yield break;
             }
 
             if (ConsciousnessSystem.Instance == null)
             {
                 Debug.LogWarning("[NarrativeNotificationBridge] ConsciousnessSystem was not found.", this);
-                return;
+                yield break;
             }
 
             if (GameStateRepository.Instance == null)
             {
                 Debug.LogWarning("[NarrativeNotificationBridge] GameStateRepository was not found.", this);
-                return;
+                yield break;
             }
 
             RuntimeContext runtimeContext = new RuntimeContext(GameStateRepository.Instance);
-            string resolvedMessage = resolver.ResolveMessage(message, runtimeContext);
+            LocalizedString localizedString = resolver.ResolveMessage(message, runtimeContext);
 
-            if (string.IsNullOrWhiteSpace(resolvedMessage))
+            if (localizedString == null || localizedString.IsEmpty)
             {
-                return;
+                if (debugLog)
+                {
+                    Debug.Log($"[NarrativeNotification] Descartado (sin entrada localizable): {message.NotificationType}", this);
+                }
+
+                yield break;
+            }
+
+            string tableName = localizedString.TableReference.TableCollectionName;
+            string key       = localizedString.TableEntryReference.Key;
+
+            if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(key))
+            {
+                Debug.LogWarning("[NarrativeNotificationBridge] LocalizedString sin tabla/clave válida.", this);
+                yield break;
             }
 
             if (debugLog)
             {
-                Debug.Log($"[NarrativeNotification] {resolvedMessage}", this);
+                var handle = localizedString.GetLocalizedStringAsync();
+                yield return handle;
+                Debug.Log($"[NarrativeNotification] Pensamiento registrado: {handle.Result}", this);
             }
 
-            ConsciousnessSystem.Instance.AddThought(resolvedMessage);
+            ConsciousnessSystem.Instance.AddThought(tableName, key);
         }
 
         private bool CanWriteNotificationNow()

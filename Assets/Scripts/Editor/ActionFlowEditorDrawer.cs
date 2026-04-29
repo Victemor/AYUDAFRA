@@ -8,13 +8,17 @@ using Game.Data;
 /// PropertyDrawer personalizado para FragmentAction.
 /// Permite contraer cada acción individual y muestra únicamente
 /// los campos relevantes según el ActionType seleccionado.
+///
+/// Para ShowThoughtInPanel y DisplayDialoguePanel se muestran AMBOS campos:
+/// el string plano (fallback/existente) y el LocalizedString (opcional).
+/// La lógica en runtime usa LocalizedString si está asignado; si no, usa el string.
 /// </summary>
 [CustomPropertyDrawer(typeof(FragmentAction))]
 public sealed class ActionFlowEditorDrawer : PropertyDrawer
 {
-    private const float BoxPadding = 6f;
+    private const float BoxPadding    = 6f;
     private const float SectionSpacing = 4f;
-    private const float FoldoutIndent = 14f;
+    private const float FoldoutIndent  = 14f;
 
     public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
     {
@@ -68,6 +72,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
         return height;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Header
+    // ─────────────────────────────────────────────────────────────────────────
+
     private void DrawFoldoutHeader(
         ref float y,
         Rect position,
@@ -98,6 +106,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
 
         y += EditorGUIUtility.singleLineHeight + EditorGUIUtility.standardVerticalSpacing;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Draw — campos específicos por ActionType
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void DrawActionSpecificFields(
         ref float y,
@@ -186,8 +198,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
 
                 break;
 
+            // ── LOCALIZACIÓN: muestra string (fallback) + LocalizedString (override opcional) ──
             case FragmentActionType.ShowThoughtInPanel:
                 DrawProperty(ref y, position, property, "text");
+                DrawProperty(ref y, position, property, "localizedText");
                 break;
 
             case FragmentActionType.SetCinematicCameraTarget:
@@ -220,10 +234,12 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
                 DrawProperty(ref y, position, property, "cameraTransitionTime");
                 break;
 
+            // ── LOCALIZACIÓN: muestra string (fallback) + LocalizedString (override opcional) ──
             case FragmentActionType.DisplayDialoguePanel:
                 DrawProperty(ref y, position, property, "dialogController");
                 DrawProperty(ref y, position, property, "dialogPoint");
                 DrawProperty(ref y, position, property, "dialogText");
+                DrawProperty(ref y, position, property, "localizedDialogText");
                 break;
 
             case FragmentActionType.HideDialoguePanel:
@@ -257,6 +273,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
                 break;
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Heights — espejo exacto de DrawActionSpecificFields
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void AddActionSpecificHeights(
         ref float height,
@@ -344,8 +364,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
 
                 break;
 
+            // ── LOCALIZACIÓN: ambos campos ───────────────────────────────────
             case FragmentActionType.ShowThoughtInPanel:
                 AddPropertyHeight(ref height, property, "text");
+                AddPropertyHeight(ref height, property, "localizedText");
                 break;
 
             case FragmentActionType.SetCinematicCameraTarget:
@@ -378,10 +400,12 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
                 AddPropertyHeight(ref height, property, "cameraTransitionTime");
                 break;
 
+            // ── LOCALIZACIÓN: ambos campos ───────────────────────────────────
             case FragmentActionType.DisplayDialoguePanel:
                 AddPropertyHeight(ref height, property, "dialogController");
                 AddPropertyHeight(ref height, property, "dialogPoint");
                 AddPropertyHeight(ref height, property, "dialogText");
+                AddPropertyHeight(ref height, property, "localizedDialogText");
                 break;
 
             case FragmentActionType.HideDialoguePanel:
@@ -416,6 +440,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Conditions
+    // ─────────────────────────────────────────────────────────────────────────
+
     private void DrawConditions(ref float y, Rect position, SerializedProperty property)
     {
         y += SectionSpacing;
@@ -427,6 +455,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
         height += SectionSpacing;
         AddPropertyHeight(ref height, property, "conditions");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Validation warnings
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void DrawValidationMessages(
         ref float y,
@@ -481,7 +513,9 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
             case FragmentActionType.DisplayDialoguePanel:
                 AddWarningIfMissing(property, "dialogController", "Falta asignar DialogueController.", warnings);
                 AddWarningIfMissing(property, "dialogPoint", "Falta asignar DialogPoint.", warnings);
-                AddWarningIfEmpty(property, "dialogText", "DialogText está vacío.", warnings);
+                AddWarningIfBothTextFieldsEmpty(
+                    property, "dialogText", "localizedDialogText",
+                    "Asigna un texto o una clave de localización para el diálogo.", warnings);
                 break;
 
             case FragmentActionType.HideDialoguePanel:
@@ -492,6 +526,12 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
                 AddWarningIfMissing(property, "draggableSpawnPoint", "Falta asignar DraggableSpawnPoint.", warnings);
                 break;
 
+            case FragmentActionType.ShowThoughtInPanel:
+                AddWarningIfBothTextFieldsEmpty(
+                    property, "text", "localizedText",
+                    "Asigna un texto o una clave de localización para el pensamiento.", warnings);
+                break;
+
             case FragmentActionType.ShowTutorial:
             case FragmentActionType.HideTutorial:
                 AddWarningIfEmpty(property, "tutorialId", "TutorialId está vacío. El tutorial no se mostrará.", warnings);
@@ -500,6 +540,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
 
         return warnings;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers de validación
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void AddWarningIfMissing(
         SerializedProperty property,
@@ -528,6 +572,60 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
         if (prop != null && string.IsNullOrWhiteSpace(prop.stringValue))
             warnings.Add(message);
     }
+
+    /// <summary>
+    /// Agrega un warning solo si AMBOS campos están vacíos: ni el string plano
+    /// ni el LocalizedString tienen contenido. Permite usar cualquiera de los dos.
+    /// </summary>
+    private void AddWarningIfBothTextFieldsEmpty(
+        SerializedProperty property,
+        string stringFieldName,
+        string localizedFieldName,
+        string message,
+        List<string> warnings)
+    {
+        SerializedProperty stringProp = property.FindPropertyRelative(stringFieldName);
+        bool stringEmpty = stringProp == null || string.IsNullOrWhiteSpace(stringProp.stringValue);
+
+        bool localizedEmpty = IsLocalizedStringEmpty(property, localizedFieldName);
+
+        if (stringEmpty && localizedEmpty)
+        {
+            warnings.Add(message);
+        }
+    }
+
+    /// <summary>
+    /// Verifica si el LocalizedString serializado no tiene tabla ni clave asignadas,
+    /// accediendo a los sub-campos internos del paquete de Localization de Unity.
+    /// </summary>
+    private bool IsLocalizedStringEmpty(SerializedProperty property, string fieldName)
+    {
+        SerializedProperty localizedProp = property.FindPropertyRelative(fieldName);
+        if (localizedProp == null)
+        {
+            return true;
+        }
+
+        SerializedProperty tableRef = localizedProp.FindPropertyRelative("m_TableReference");
+        SerializedProperty entryRef = localizedProp.FindPropertyRelative("m_TableEntryReference");
+
+        if (tableRef == null || entryRef == null)
+        {
+            return true;
+        }
+
+        SerializedProperty tableNameProp = tableRef.FindPropertyRelative("m_TableCollectionName");
+        SerializedProperty keyProp       = entryRef.FindPropertyRelative("m_Key");
+
+        return tableNameProp == null || keyProp == null ||
+               string.IsNullOrWhiteSpace(tableNameProp.stringValue) ||
+               string.IsNullOrWhiteSpace(keyProp.stringValue);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers de dibujado
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void DrawProperty(
         ref float y,
@@ -563,6 +661,10 @@ public sealed class ActionFlowEditorDrawer : PropertyDrawer
         totalHeight += EditorGUI.GetPropertyHeight(childProperty, true) +
                        EditorGUIUtility.standardVerticalSpacing;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Utilidades de header
+    // ─────────────────────────────────────────────────────────────────────────
 
     private string GetActionTitle(SerializedProperty actionTypeProp)
     {

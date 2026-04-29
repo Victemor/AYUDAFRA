@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Localization;
 using Game.Conditions;
 using Game.Data;
 
@@ -7,11 +8,15 @@ namespace Game.Runtime
 {
     /// <summary>
     /// Regla de mensaje específico basada en una única condición lógica.
-    /// 
+    ///
     /// Implementación:
     /// - Usa un solo ConditionGroup serializado.
     /// - Por convención de diseño, ese grupo debe contener una sola condición.
     /// - Si el grupo se cumple, este mensaje tiene prioridad sobre los genéricos.
+    ///
+    /// Cambio de localización: el campo <c>message</c> (string plano) fue
+    /// reemplazado por <c>localizedMessage</c> (<see cref="LocalizedString"/>)
+    /// para que el texto se traduzca al idioma activo en runtime.
     /// </summary>
     [Serializable]
     public sealed class NarrativeSpecificMessageByCondition
@@ -25,13 +30,17 @@ namespace Game.Runtime
         private ConditionGroup conditionGroup;
 
         [SerializeField]
-        [TextArea]
-        [Tooltip("Mensaje forzado que se enviará cuando la condición se cumpla.")]
-        private string message;
+        [Tooltip("Clave de localización del mensaje forzado. Selecciona tabla y clave desde la tabla de localización.")]
+        private LocalizedString localizedMessage;
 
         public NarrativeNotificationType NotificationType => notificationType;
         public ConditionGroup ConditionGroup => conditionGroup;
-        public string Message => message;
+
+        /// <summary>
+        /// Referencia de localización del mensaje específico.
+        /// Resuélvela con <c>GetLocalizedStringAsync()</c> antes de mostrarla.
+        /// </summary>
+        public LocalizedString LocalizedMessage => localizedMessage;
 
         /// <summary>
         /// Devuelve true si esta regla aplica a la notificación actual
@@ -51,7 +60,7 @@ namespace Game.Runtime
                 return false;
             }
 
-            if (string.IsNullOrWhiteSpace(message))
+            if (localizedMessage == null || localizedMessage.IsEmpty)
             {
                 return false;
             }

@@ -2,24 +2,19 @@ using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 
 /// <summary>
 /// Controlador de interfaz encargado de representar visualmente los pensamientos
 /// emitidos por el sistema de consciencia.
 ///
-/// Orden de inicialización:
-/// - OnEnable(): suscribe al evento de nuevos pensamientos. Solo reconstruye el
-///   historial si ya pasó por Start() al menos una vez (re-activaciones posteriores).
-/// - Start(): hace la reconstrucción inicial del historial desde el save.
-///   Se hace aquí porque en este punto GameManager.Awake() ya corrió y
-///   RestoreConsciousness() ya restauró los pensamientos al ConsciousnessSystem.
+/// Soporta dos rutas según el tipo de <see cref="ConsciousnessSystem.ThoughtData"/>:
+/// - <b>Localizada</b>: resuelve la <see cref="LocalizedString"/> async al idioma activo.
+/// - <b>Raw</b>: usa <c>RawText</c> directamente (contenido aún no migrado).
 ///
-/// Responsabilidades:
-/// - Escuchar nuevos pensamientos del sistema global.
-/// - Encolar pensamientos para mostrarlos en orden.
-/// - Escribir cada pensamiento con efecto de tipeo.
-/// - Reproducir audio de tipeo de forma controlada.
-/// - Reconstruir el historial visible al activarse.
+/// Al cambiar de idioma, solo los pensamientos localizados se re-resuelven;
+/// los raw se muestran tal cual fueron guardados.
 /// </summary>
 public sealed class ThoughtUIManager : MonoBehaviour
 {
@@ -84,47 +79,33 @@ public sealed class ThoughtUIManager : MonoBehaviour
     private Coroutine processingCoroutine;
     private bool isProcessing;
     private float lastTypingSoundTime = float.NegativeInfinity;
-
-    /// <summary>
-    /// True a partir del primer Start(). Impide que OnEnable() reconstruya
-    /// antes de que el save haya sido cargado.
-    /// </summary>
     private bool isInitialized;
 
     #endregion
 
     #region Unity Lifecycle
 
-    /// <summary>
-    /// Suscribe al evento de nuevos pensamientos.
-    /// Solo reconstruye el historial si ya pasamos por Start() (re-activaciones).
-    /// El primer rebuild se hace en Start() para garantizar que el save ya fue cargado.
-    /// </summary>
     private void OnEnable()
     {
         ConsciousnessSystem.OnThoughtAdded += HandleThoughtAdded;
+        LocalizationSettings.SelectedLocaleChanged += HandleLocaleChanged;
 
         if (isInitialized && rebuildHistoryOnEnable)
         {
-            RebuildFromConsciousness();
+            StartRebuild();
         }
     }
 
-    /// <summary>
-    /// Reconstruye el historial de pensamientos desde el save.
-    /// En este punto todos los Awake() ya corrieron, incluyendo GameManager.Awake()
-    /// que llama RestoreConsciousness(), por lo que ConsciousnessSystem ya tiene
-    /// los pensamientos guardados.
-    /// </summary>
     private void Start()
     {
         isInitialized = true;
-        RebuildFromConsciousness();
+        StartRebuild();
     }
 
     private void OnDisable()
     {
         ConsciousnessSystem.OnThoughtAdded -= HandleThoughtAdded;
+        LocalizationSettings.SelectedLocaleChanged -= HandleLocaleChanged;
 
         if (processingCoroutine != null)
         {
@@ -141,53 +122,121 @@ public sealed class ThoughtUIManager : MonoBehaviour
 
     private void HandleThoughtAdded(ConsciousnessSystem.ThoughtData thought)
     {
-        if (string.IsNullOrWhiteSpace(thought.Text))
-        {
-            return;
-        }
+        StartCoroutine(EnqueueResolvedThought(thought));
+    }
 
-        thoughtQueue.Enqueue(thought.Text);
-
-        if (!isProcessing)
-        {
-            processingCoroutine = StartCoroutine(ProcessQueue());
-        }
+    /// <summary>
+    /// Al cambiar de idioma, reconstruye solo los pensamientos localizados
+    /// con el nuevo idioma activo. Los pensamientos raw se mantienen igual.
+    /// </summary>
+    private void HandleLocaleChanged(Locale locale)
+    {
+        StartRebuild();
     }
 
     #endregion
 
     #region Private Methods
 
+    private void StartRebuild()
+    {
+        if (processingCoroutine != null)
+        {
+            StopCoroutine(processingCoroutine);
+            processingCoroutine = null;
+        }
+
+        isProcessing = false;
+        thoughtQueue.Clear();
+
+        StartCoroutine(RebuildFromConsciousnessAsync());
+    }
+
     /// <summary>
-    /// Reconstruye en pantalla el historial actual de pensamientos almacenados
-    /// por el sistema de consciencia.
+    /// Reconstruye el historial completo. Para cada pensamiento:
+    /// - Si es localizado → resuelve async al idioma activo.
+    /// - Si es raw → usa el texto plano directamente.
     /// </summary>
-    private void RebuildFromConsciousness()
+    private IEnumerator RebuildFromConsciousnessAsync()
     {
         if (thoughtText == null || ConsciousnessSystem.Instance == null)
         {
-            return;
+            yield break;
         }
-
-        thoughtQueue.Clear();
-
-        IReadOnlyList<ConsciousnessSystem.ThoughtData> thoughts = ConsciousnessSystem.Instance.GetAllThoughts();
 
         if (clearBeforeTyping)
         {
             thoughtText.text = string.Empty;
         }
 
+        IReadOnlyList<ConsciousnessSystem.ThoughtData> thoughts =
+            ConsciousnessSystem.Instance.GetAllThoughts();
+
         for (int i = 0; i < thoughts.Count; i++)
         {
-            string currentText = thoughts[i].Text;
+            ConsciousnessSystem.ThoughtData thought = thoughts[i];
+            string resolvedText;
 
-            if (string.IsNullOrWhiteSpace(currentText))
+            if (thought.IsLocalized)
             {
-                continue;
+                var handle = thought.ToLocalizedString().GetLocalizedStringAsync();
+                yield return handle;
+
+                if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
+                {
+                    continue;
+                }
+
+                resolvedText = handle.Result;
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(thought.RawText))
+                {
+                    continue;
+                }
+
+                resolvedText = thought.RawText;
             }
 
-            thoughtText.text += $"\n\n{currentText}";
+            thoughtText.text += $"\n\n{resolvedText}";
+        }
+    }
+
+    /// <summary>
+    /// Resuelve un pensamiento (localizado o raw) y lo encola para el efecto de tipeo.
+    /// </summary>
+    private IEnumerator EnqueueResolvedThought(ConsciousnessSystem.ThoughtData thought)
+    {
+        string resolvedText;
+
+        if (thought.IsLocalized)
+        {
+            var handle = thought.ToLocalizedString().GetLocalizedStringAsync();
+            yield return handle;
+
+            if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
+            {
+                yield break;
+            }
+
+            resolvedText = handle.Result;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(thought.RawText))
+            {
+                yield break;
+            }
+
+            resolvedText = thought.RawText;
+        }
+
+        thoughtQueue.Enqueue(resolvedText);
+
+        if (!isProcessing)
+        {
+            processingCoroutine = StartCoroutine(ProcessQueue());
         }
     }
 
