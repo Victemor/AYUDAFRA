@@ -100,6 +100,18 @@ public sealed class DialogueController : MonoBehaviour
     /// </summary>
     public void ShowText(string content, Vector3 basePosition)
     {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            Debug.LogWarning("[DialogueController] ShowText recibió texto vacío.", this);
+            return;
+        }
+
+        if (GamePlayStateController.Instance == null)
+        {
+            Debug.LogWarning("[DialogueController] GamePlayStateController.Instance es null. El diálogo no se mostrará.", this);
+            return;
+        }
+
         GamePlayStateController.Instance.EnterDialogue();
         HideCurrentImmediate();
 
@@ -110,8 +122,6 @@ public sealed class DialogueController : MonoBehaviour
 
         instance.gameObject.SetActive(true);
         instance.SetPosition(finalPosition);
-
-        // Ambos pueden modificar texto → aquí el manager lo hace
         instance.ShowWithTyping(content, fadeInDuration);
     }
 
@@ -126,7 +136,7 @@ public sealed class DialogueController : MonoBehaviour
     }
 
     /// <summary>
-    /// Oculta el texto actual.
+    /// Oculta el texto actual con fade out.
     /// </summary>
     public void HideCurrent()
     {
@@ -142,7 +152,7 @@ public sealed class DialogueController : MonoBehaviour
     }
 
     /// <summary>
-    /// Oculta inmediatamente.
+    /// Oculta inmediatamente sin animación.
     /// </summary>
     public void HideCurrentImmediate()
     {

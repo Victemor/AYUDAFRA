@@ -1,55 +1,85 @@
-using DG.Tweening;
 using Game.Core;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Manager global de navegación y UI.
-/// Persiste entre escenas.
+/// Manager de navegación del menú principal.
+/// Módulo 4: delega las transiciones de escena a <see cref="SceneTransitionController"/>
+/// para obtener la pantalla de carga asíncrona con preload.
 /// </summary>
 public class UIMainMenuManager : MonoBehaviour
 {
+    [Header("Sprites de carga")]
 
-    [Header("Transition")]
-    [SerializeField] private ScreenFade screenFade;
+    [SerializeField]
+    [Tooltip("Sprite mostrado al entrar a un fragmento. Null = solo negro.")]
+    private Sprite fragmentLoadingSprite;
 
-    [SerializeField] private float loadDelay = 1f;
+    [Header("Fallback")]
 
-    /// <summary>
-    /// Indica si el sistema está en transición de escena.
-    /// Bloquea cualquier input durante este estado.
-    /// </summary>
-    public bool IsTransitioning { get; private set; }
+    [SerializeField]
+    [Tooltip("Componente de fade usado si SceneTransitionController no está disponible.")]
+    private ScreenFade screenFade;
 
-    void Start()
+    [SerializeField]
+    private float fallbackLoadDelay = 1f;
+
+    private void Start()
     {
         GamePlayStateController.Instance?.EnterMenu();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Public API
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// <summary>
-    /// Carga escena con transición.
+    /// Abre una escena con pantalla de carga asíncrona.
+    /// Úsalo para cargar fragmentos desde el menú.
     /// </summary>
     public void OpenScene(string sceneName)
     {
+        OpenScene(sceneName, fragmentLoadingSprite);
+    }
+
+    /// <summary>
+    /// Abre una escena con sprite de carga específico.
+    /// </summary>
+    public void OpenScene(string sceneName, Sprite sprite)
+    {
         if (string.IsNullOrEmpty(sceneName))
         {
-            Debug.LogError("SceneName inválido.");
+            Debug.LogError("[UIMainMenuManager] SceneName inválido.", this);
             return;
         }
 
+        if (SceneTransitionController.Instance != null)
+        {
+            SceneTransitionController.Instance.LoadScene(sceneName, sprite);
+        }
+        else
+        {
+            Debug.LogWarning("[UIMainMenuManager] SceneTransitionController no disponible. Usando fallback.", this);
+            FallbackOpenScene(sceneName);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fallback
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void FallbackOpenScene(string sceneName)
+    {
         if (screenFade == null)
         {
-            Debug.LogWarning("ScreenFade no asignado.");
-            SceneManager.LoadScene(sceneName);
+            UnityEngine.SceneManagement.SceneManager.LoadScene(sceneName);
             return;
         }
 
-        screenFade.FadeIn(this.name);
+        screenFade.FadeIn(name);
 
-        DOVirtual.DelayedCall(loadDelay, () =>
+        DG.Tweening.DOVirtual.DelayedCall(fallbackLoadDelay, () =>
         {
-
-            SceneManager.LoadScene(sceneName);
+            UnityEngine.SceneManagement.SceneManager.LoadScene(sceneName);
         });
     }
 }

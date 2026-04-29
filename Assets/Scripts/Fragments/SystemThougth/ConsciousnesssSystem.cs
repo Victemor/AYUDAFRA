@@ -6,14 +6,16 @@ using UnityEngine.Localization;
 /// <summary>
 /// Sistema singleton que almacena y notifica el historial de pensamientos del jugador.
 ///
-/// Soporta dos rutas para agregar pensamientos:
-/// - <b>Localizada</b>: <see cref="AddThought(string, string)"/> — recibe tabla + clave.
-///   El texto se resuelve al idioma activo en el momento de mostrarse, lo que permite
-///   cambiar de idioma sin invalidar el historial.
-/// - <b>Raw (fallback)</b>: <see cref="AddThoughtRaw"/> — recibe texto plano directamente.
-///   Usado por contenido aún no migrado a la tabla de localización.
-///   El texto NO cambia al cambiar de idioma.
+/// Módulo 3 — Persistencia Intro → Menú:
+/// El atributo <c>[DefaultExecutionOrder(-200)]</c> garantiza que este Awake()
+/// corre ANTES que GameManager (orden 0), que llama SaveSystem.LoadGame() →
+/// RestoreConsciousness(). Sin este orden, Instance sería null durante la
+/// restauración y los pensamientos guardados se perderían silenciosamente.
+///
+/// El objeto se crea en la escena Menú y persiste en todas las escenas
+/// posteriores via DontDestroyOnLoad. No debe moverse a la escena Intro.
 /// </summary>
+[DefaultExecutionOrder(-200)]
 public sealed class ConsciousnessSystem : MonoBehaviour
 {
     public static event Action<ThoughtData> OnThoughtAdded;
@@ -23,38 +25,43 @@ public sealed class ConsciousnessSystem : MonoBehaviour
     private int maxThoughts = 50;
 
     /// <summary>
-    /// Datos de un pensamiento. Admite ruta localizada (TableName + Key)
-    /// o ruta raw (RawText) como fallback para contenido no migrado.
+    /// Datos de un pensamiento. Soporta referencia por nombre de clave (Key),
+    /// por ID numérico (KeyId) o texto raw sin localización.
     /// </summary>
     public struct ThoughtData
     {
-        /// <summary>Nombre de la tabla de localización. Vacío si es raw.</summary>
+        /// <summary>Nombre de la tabla de localización.</summary>
         public string TableName;
 
-        /// <summary>Clave en la tabla. Vacía si es raw.</summary>
+        /// <summary>Clave string de la entrada. Puede estar vacío si KeyId > 0.</summary>
         public string Key;
 
-        /// <summary>
-        /// Texto plano para pensamientos no localizados (fallback).
-        /// Vacío si el pensamiento usa la ruta localizada.
-        /// </summary>
+        /// <summary>ID numérico de la entrada. Usado cuando Key está vacío.</summary>
+        public long KeyId;
+
+        /// <summary>Texto plano sin localización.</summary>
         public string RawText;
 
         public float Timestamp;
 
-        /// <summary>
-        /// True si este pensamiento tiene referencia de localización válida.
-        /// False implica que debe usarse <see cref="RawText"/> directamente.
-        /// </summary>
+        /// <summary>True si tiene referencia de localización válida.</summary>
         public bool IsLocalized =>
             !string.IsNullOrWhiteSpace(TableName) &&
-            !string.IsNullOrWhiteSpace(Key);
+            (!string.IsNullOrWhiteSpace(Key) || KeyId > 0);
 
         /// <summary>
-        /// Crea el <see cref="LocalizedString"/> a partir de la referencia almacenada.
-        /// Solo llamar cuando <see cref="IsLocalized"/> es true.
+        /// Construye el LocalizedString correcto según el tipo de referencia.
+        /// Solo llamar cuando IsLocalized es true.
         /// </summary>
-        public LocalizedString ToLocalizedString() => new LocalizedString(TableName, Key);
+        public LocalizedString ToLocalizedString()
+        {
+            if (!string.IsNullOrWhiteSpace(Key))
+            {
+                return new LocalizedString(TableName, Key);
+            }
+
+            return new LocalizedString(TableName, KeyId);
+        }
     }
 
     private readonly List<ThoughtData> thoughts = new();
@@ -74,14 +81,50 @@ public sealed class ConsciousnessSystem : MonoBehaviour
     }
 
     /// <summary>
-    /// Registra un pensamiento localizado usando tabla + clave.
-    /// El texto se resuelve al idioma activo cada vez que se muestra.
+    /// Registra un pensamiento pasando el LocalizedString directamente.
+    /// Maneja referencias por nombre de clave y por ID numérico.
+    /// </summary>
+    public void AddThought(LocalizedString localizedString)
+    {
+        if (localizedString == null || localizedString.IsEmpty)
+        {
+            Debug.LogWarning("[ConsciousnessSystem] LocalizedString nulo o vacío.");
+            return;
+        }
+
+        string tableName = localizedString.TableReference.TableCollectionName;
+        string key       = localizedString.TableEntryReference.Key;
+        long   keyId     = localizedString.TableEntryReference.KeyId;
+
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            Debug.LogWarning("[ConsciousnessSystem] TableName vacío en LocalizedString.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(key) && keyId <= 0)
+        {
+            Debug.LogWarning("[ConsciousnessSystem] Ni Key ni KeyId son válidos.");
+            return;
+        }
+
+        AddThoughtInternal(new ThoughtData
+        {
+            TableName = tableName,
+            Key       = key,
+            KeyId     = keyId,
+            Timestamp = Time.time
+        });
+    }
+
+    /// <summary>
+    /// Registra un pensamiento usando tabla + clave string explícitos.
     /// </summary>
     public void AddThought(string tableName, string key)
     {
         if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(key))
         {
-            Debug.LogWarning("[ConsciousnessSystem] Referencia de localización inválida (tabla o clave vacía).");
+            Debug.LogWarning("[ConsciousnessSystem] Referencia de localización inválida.");
             return;
         }
 
@@ -94,14 +137,13 @@ public sealed class ConsciousnessSystem : MonoBehaviour
     }
 
     /// <summary>
-    /// Registra un pensamiento con texto plano (fallback para contenido no localizado).
-    /// Usar mientras el contenido no haya sido migrado a la tabla de localización.
+    /// Registra un pensamiento con texto plano sin localización.
     /// </summary>
     public void AddThoughtRaw(string rawText)
     {
         if (string.IsNullOrWhiteSpace(rawText))
         {
-            Debug.LogWarning("[ConsciousnessSystem] Se intentó agregar un pensamiento raw vacío.");
+            Debug.LogWarning("[ConsciousnessSystem] Texto raw vacío.");
             return;
         }
 

@@ -1,77 +1,96 @@
+using System.Collections;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 
 /// <summary>
-/// Componente que enlaza un <see cref="TMP_Text"/> con el sistema de localización.
-/// Actualiza automáticamente el texto cada vez que el idioma cambia,
+/// Enlaza un <see cref="TMP_Text"/> con Unity Localization.
+/// Actualiza el texto inmediatamente cuando cambia el locale activo,
 /// sin necesidad de recargar la escena.
-/// 
-/// Adjuntar este componente al mismo GameObject que tenga el TMP_Text.
+///
+/// Reemplaza la versión anterior que dependía de LocalizationManager
+/// (sistema custom eliminado en migración Opción A).
+///
+/// Uso: adjunta al mismo GameObject que tenga el TMP_Text y
+/// asigna el campo <c>localizedString</c> (tabla + clave) en el Inspector.
 /// </summary>
 [RequireComponent(typeof(TMP_Text))]
-public class LocalizedText : MonoBehaviour
+public sealed class LocalizedText : MonoBehaviour
 {
-    // ─── Inspector ────────────────────────────────────────────────────────────
+    [Tooltip("Texto localizado. Selecciona tabla y clave desde el Inspector.")]
+    [SerializeField] private LocalizedString localizedString;
 
-    [Tooltip("Clave de localización que identifica este texto. Ej: 'ui.menu.play'")]
-    [SerializeField] private string localizationKey;
-
-    // ─── Estado ───────────────────────────────────────────────────────────────
-
-    private TMP_Text _textComponent;
-
-    // ─── Unity Lifecycle ──────────────────────────────────────────────────────
+    private TMP_Text textComponent;
+    private Coroutine refreshCoroutine;
 
     private void Awake()
     {
-        _textComponent = GetComponent<TMP_Text>();
+        textComponent = GetComponent<TMP_Text>();
     }
 
     private void OnEnable()
     {
-        LocalizationManager.OnLanguageChanged += OnLanguageChanged;
-
-        // Aplica el idioma actual al habilitarse, cubriendo el caso donde
-        // el LocalizationManager ya existe antes de que este objeto despierte.
-        RefreshText();
+        LocalizationSettings.SelectedLocaleChanged += HandleLocaleChanged;
+        StartRefresh();
     }
 
     private void OnDisable()
     {
-        LocalizationManager.OnLanguageChanged -= OnLanguageChanged;
-    }
+        LocalizationSettings.SelectedLocaleChanged -= HandleLocaleChanged;
 
-    // ─── API Pública ──────────────────────────────────────────────────────────
+        if (refreshCoroutine != null)
+        {
+            StopCoroutine(refreshCoroutine);
+            refreshCoroutine = null;
+        }
+    }
 
     /// <summary>
-    /// Cambia la clave de localización en tiempo de ejecución y actualiza el texto.
-    /// Útil para reutilizar el mismo componente con diferentes claves (ej: tooltips dinámicos).
+    /// Cambia la referencia de localización en runtime y refresca el texto inmediatamente.
+    /// Equivalente al antiguo SetKey().
     /// </summary>
-    /// <param name="newKey">Nueva clave de localización.</param>
-    public void SetKey(string newKey)
+    public void SetLocalizedString(LocalizedString newLocalizedString)
     {
-        localizationKey = newKey;
-        RefreshText();
+        localizedString = newLocalizedString;
+        StartRefresh();
     }
 
-    // ─── Privado ──────────────────────────────────────────────────────────────
+    private void HandleLocaleChanged(Locale locale) => StartRefresh();
 
-    private void OnLanguageChanged(Language _) => RefreshText();
-
-    private void RefreshText()
+    private void StartRefresh()
     {
-        if (LocalizationManager.Instance == null) return;
-        if (string.IsNullOrEmpty(localizationKey)) return;
+        if (refreshCoroutine != null)
+        {
+            StopCoroutine(refreshCoroutine);
+        }
 
-        _textComponent.text = LocalizationManager.Instance.GetText(localizationKey);
+        refreshCoroutine = StartCoroutine(RefreshText());
+    }
+
+    private IEnumerator RefreshText()
+    {
+        if (localizedString == null || localizedString.IsEmpty)
+        {
+            yield break;
+        }
+
+        var handle = localizedString.GetLocalizedStringAsync();
+        yield return handle;
+
+        if (handle.IsDone && !string.IsNullOrWhiteSpace(handle.Result))
+        {
+            textComponent.text = handle.Result;
+        }
+
+        refreshCoroutine = null;
     }
 
 #if UNITY_EDITOR
-    // Recarga la preview en el Editor cuando se cambia la clave en el Inspector.
     private void OnValidate()
     {
         if (!Application.isPlaying) return;
-        RefreshText();
+        StartRefresh();
     }
 #endif
 }

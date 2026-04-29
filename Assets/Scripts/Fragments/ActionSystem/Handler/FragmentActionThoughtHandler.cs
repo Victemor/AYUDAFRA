@@ -5,12 +5,14 @@ using Game.Data;
 /// <summary>
 /// Handler que ejecuta la acción <see cref="FragmentActionType.ShowThoughtInPanel"/>.
 ///
-/// Lógica de resolución (prioridad descendente):
-/// 1. Si <c>action.LocalizedText</c> está asignado → resuelve async y usa ruta localizada.
-/// 2. Si no → usa <c>action.Text</c> como texto plano directo (fallback).
+/// Pasa el <see cref="UnityEngine.Localization.LocalizedString"/> directamente a
+/// <see cref="ConsciousnessSystem.AddThought(UnityEngine.Localization.LocalizedString)"/>
+/// sin intentar extraer tabla + clave manualmente. Esto evita el problema donde
+/// <c>TableEntryReference.Key</c> devuelve string vacío cuando Unity guardó
+/// la referencia internamente por ID numérico en lugar de por nombre de clave.
 ///
-/// Esto permite mantener los textos existentes sin migrar mientras se va
-/// añadiendo la localización de forma gradual entrada por entrada.
+/// El campo <c>action.Text</c> (string plano) es solo referencia visual para el
+/// diseñador en el Inspector y no tiene efecto en runtime.
 /// </summary>
 public sealed class FragmentActionThoughtHandler
 {
@@ -22,32 +24,29 @@ public sealed class FragmentActionThoughtHandler
             yield break;
         }
 
-        // ── Ruta localizada ──────────────────────────────────────────────────
-        if (action.LocalizedText != null && !action.LocalizedText.IsEmpty)
+        if (action.LocalizedText == null || action.LocalizedText.IsEmpty)
         {
-            var handle = action.LocalizedText.GetLocalizedStringAsync();
-            yield return handle;
-
-            if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
-            {
-                Debug.LogWarning("[FragmentActionThoughtHandler] No se pudo resolver LocalizedText.", host);
-                yield break;
-            }
-
-            string tableName = action.LocalizedText.TableReference.TableCollectionName;
-            string key       = action.LocalizedText.TableEntryReference.Key;
-            ConsciousnessSystem.Instance.AddThought(tableName, key);
+            Debug.LogWarning(
+                "[FragmentActionThoughtHandler] LocalizedText vacío. " +
+                "Asigna tabla y clave en el Inspector. " +
+                "El campo Text es solo referencia visual.",
+                host);
             yield break;
         }
 
-        // ── Ruta raw (fallback) ──────────────────────────────────────────────
-        if (!string.IsNullOrWhiteSpace(action.Text))
+        // Verificamos que el string se resuelve correctamente antes de registrar.
+        var handle = action.LocalizedText.GetLocalizedStringAsync();
+        yield return handle;
+
+        if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
         {
-            ConsciousnessSystem.Instance.AddThoughtRaw(action.Text);
+            Debug.LogWarning("[FragmentActionThoughtHandler] No se pudo resolver LocalizedText.", host);
             yield break;
         }
 
-        Debug.LogWarning("[FragmentActionThoughtHandler] Ni LocalizedText ni Text tienen contenido.", host);
+        // Pasamos el LocalizedString completo — ConsciousnessSystem extrae
+        // internamente Key y KeyId manejando ambos tipos de referencia.
+        ConsciousnessSystem.Instance.AddThought(action.LocalizedText);
     }
 
     public bool CanHandle(FragmentActionType actionType)

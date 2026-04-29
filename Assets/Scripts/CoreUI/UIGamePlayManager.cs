@@ -5,7 +5,8 @@ using UnityEngine.SceneManagement;
 
 /// <summary>
 /// Manager de navegación en gameplay.
-/// Responsable de volver al menú y cargar escenas con transición.
+/// Módulo 4: delega las transiciones de escena a <see cref="SceneTransitionController"/>
+/// para obtener la pantalla de carga asíncrona con preload.
 /// </summary>
 public class UIGameplayManager : MonoBehaviour
 {
@@ -14,27 +15,37 @@ public class UIGameplayManager : MonoBehaviour
     [Header("Transition")]
 
     [SerializeField]
-    [Tooltip("Componente encargado del fade de pantalla.")]
-    private ScreenFade screenFade;
+    [Tooltip("Sprite mostrado durante la carga al volver al menú. Null = solo negro.")]
+    private Sprite menuLoadingSprite;
 
     [SerializeField]
-    [Tooltip("Tiempo de espera antes de cargar la escena.")]
-    private float loadDelay = 1f;
+    [Tooltip("Sprite mostrado al entrar a un fragmento. Null = solo negro.")]
+    private Sprite fragmentLoadingSprite;
 
     [Header("Scenes")]
 
     [SerializeField]
-    [Tooltip("Escena del menú principal.")]
+    [Tooltip("Nombre exacto de la escena del menú principal.")]
     private SceneReference mainMenuScene;
 
     [SerializeField]
-    [Tooltip("Nombre exacto de la escena de intro. Esta escena no fuerza estado de exploración.")]
+    [Tooltip("Nombre exacto de la escena de intro (no fuerza estado de exploración).")]
     private string introSceneName = "Intro";
 
+    [Header("Fade (fallback sin SceneTransitionController)")]
+
+    [SerializeField]
+    [Tooltip("Componente de fade usado si SceneTransitionController no está disponible.")]
+    private ScreenFade screenFade;
+
     /// <summary>
-    /// Indica si el sistema está en transición de escena.
+    /// True mientras hay una transición en progreso.
+    /// Delega a SceneTransitionController para mantener compatibilidad
+    /// con DropController y cualquier otro sistema que lo consulte.
     /// </summary>
-    public bool IsTransitioning { get; private set; }
+    public bool IsTransitioning =>
+        SceneTransitionController.Instance != null &&
+        SceneTransitionController.Instance.IsTransitioning;
 
     private void Awake()
     {
@@ -57,7 +68,7 @@ public class UIGameplayManager : MonoBehaviour
 
     private void Update()
     {
-        if (IsTransitioning)
+        if (SceneTransitionController.Instance != null && SceneTransitionController.Instance.IsTransitioning)
         {
             return;
         }
@@ -68,8 +79,12 @@ public class UIGameplayManager : MonoBehaviour
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Public API
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// <summary>
-    /// Regresa al menú principal usando transición.
+    /// Regresa al menú principal con pantalla de carga.
     /// </summary>
     public void BackToMenu()
     {
@@ -79,59 +94,61 @@ public class UIGameplayManager : MonoBehaviour
             return;
         }
 
-        LoadScene(mainMenuScene.SceneName, name);
+        LoadScene(mainMenuScene.SceneName, menuLoadingSprite);
     }
 
     /// <summary>
-    /// Carga una escena con transición y sincroniza el estado de gameplay después de cargar.
+    /// Carga una escena con pantalla de carga asíncrona.
     /// </summary>
-    public void LoadScene(string sceneName, string fromObject)
+    public void LoadScene(string sceneName, Sprite sprite = null)
     {
-        Debug.Log($"[UIGameplayManager] LoadScene llamado desde {fromObject} para cargar {sceneName}", this);
-
-        if (IsTransitioning)
-        {
-            return;
-        }
-
         if (string.IsNullOrEmpty(sceneName))
         {
             Debug.LogError("[UIGameplayManager] SceneName inválido.", this);
             return;
         }
 
-        IsTransitioning = true;
-        GamePlayStateController.Instance?.EnterTransition();
-
-        SceneManager.sceneLoaded += HandleSceneLoaded;
-
-        if (screenFade == null)
+        if (SceneTransitionController.Instance != null)
         {
-            Debug.LogWarning("[UIGameplayManager] ScreenFade no asignado.", this);
-            SceneManager.LoadScene(sceneName);
-            return;
+            SceneTransitionController.Instance.LoadScene(sceneName, sprite);
         }
-
-        screenFade.FadeIn(name);
-
-        DOVirtual.DelayedCall(loadDelay, () =>
+        else
         {
-            SceneManager.LoadScene(sceneName);
-        });
+            // Fallback al sistema anterior si el controller no está disponible.
+            Debug.LogWarning("[UIGameplayManager] SceneTransitionController no disponible. Usando fallback.", this);
+            FallbackLoadScene(sceneName);
+        }
     }
 
     /// <summary>
-    /// Aplica el estado correcto después de cargar la nueva escena.
+    /// Carga un fragmento (escena de gameplay) con el sprite de fragmento.
     /// </summary>
-    private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+    public void LoadFragment(string sceneName)
     {
-        SceneManager.sceneLoaded -= HandleSceneLoaded;
+        LoadScene(sceneName, fragmentLoadingSprite);
+    }
 
-        IsTransitioning = false;
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fallback
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void FallbackLoadScene(string sceneName)
+    {
+        if (screenFade != null)
+        {
+            screenFade.FadeIn(name);
+        }
+
+        SceneManager.sceneLoaded += HandleFallbackSceneLoaded;
+        SceneManager.LoadScene(sceneName);
+    }
+
+    private void HandleFallbackSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        SceneManager.sceneLoaded -= HandleFallbackSceneLoaded;
 
         if (GamePlayStateController.Instance == null)
         {
-            Debug.LogWarning("[UIGameplayManager] GamePlayStateController no encontrado.", this);
             return;
         }
 

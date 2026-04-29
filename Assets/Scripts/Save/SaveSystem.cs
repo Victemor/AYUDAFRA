@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using Game.Runtime;
 using Game.Data;
+using System;
 
 namespace Game.Save
 {
@@ -27,6 +28,12 @@ namespace Game.Save
 
         /// <summary>Indica si existe un save cargado en memoria y disponible para aplicar a escenas.</summary>
         public static bool HasLoadedData => cachedLoadedData != null;
+
+        /// <summary>
+        /// Se dispara al finalizar LoadGame(). Úsalo para sincronizar sistemas
+        /// que dependen del momento exacto en que la restauración completó.
+        /// </summary>
+        public static event Action OnSaveLoaded;
 
         #endregion
 
@@ -243,6 +250,8 @@ namespace Game.Save
             ApplyLoadedSceneWorldObjects();
 
             Debug.Log("[SAVE] Game Loaded");
+            OnSaveLoaded?.Invoke();
+
         }
 
         /// <summary>Aplica el estado persistido a todos los PersistentWorldObject de la escena activa.</summary>
@@ -386,25 +395,26 @@ namespace Game.Save
         private static ConsciousnessSaveData BuildConsciousnessSaveData()
         {
             ConsciousnessSaveData data = new ConsciousnessSaveData();
-
+ 
             if (ConsciousnessSystem.Instance == null)
             {
                 return data;
             }
-
+ 
             IReadOnlyList<ConsciousnessSystem.ThoughtData> thoughts =
                 ConsciousnessSystem.Instance.GetAllThoughts();
-
+ 
             for (int i = 0; i < thoughts.Count; i++)
             {
                 ConsciousnessSystem.ThoughtData thought = thoughts[i];
-
+ 
                 if (thought.IsLocalized)
                 {
                     data.thoughts.Add(new ThoughtSaveData
                     {
                         tableName = thought.TableName,
                         key       = thought.Key,
+                        keyId     = thought.KeyId,
                         timestamp = thought.Timestamp
                     });
                 }
@@ -417,7 +427,7 @@ namespace Game.Save
                     });
                 }
             }
-
+ 
             return data;
         }
 
@@ -425,27 +435,28 @@ namespace Game.Save
         /// Restaura el historial persistido del sistema de consciencia.
         /// Soporta saves localizados (tableName + key) y saves raw legacy (rawText).
         /// </summary>
-        private static void RestoreConsciousness(ConsciousnessSaveData data)
+         private static void RestoreConsciousness(ConsciousnessSaveData data)
         {
             if (ConsciousnessSystem.Instance == null)
             {
                 return;
             }
-
+ 
             List<ConsciousnessSystem.ThoughtData> restored = new();
-
+ 
             if (data != null && data.thoughts != null)
             {
                 for (int i = 0; i < data.thoughts.Count; i++)
                 {
                     ThoughtSaveData saved = data.thoughts[i];
-
+ 
                     if (saved.IsLocalized)
                     {
                         restored.Add(new ConsciousnessSystem.ThoughtData
                         {
                             TableName = saved.tableName,
                             Key       = saved.key,
+                            KeyId     = saved.keyId,
                             Timestamp = saved.timestamp
                         });
                     }
@@ -459,7 +470,7 @@ namespace Game.Save
                     }
                 }
             }
-
+ 
             ConsciousnessSystem.Instance.RestoreThoughts(restored, notifyListeners: false);
         }
 
@@ -547,7 +558,7 @@ namespace Game.Save
                 return;
             }
 
-            PersistentWorldObject[] sceneObjects = Object.FindObjectsByType<PersistentWorldObject>(
+            PersistentWorldObject[] sceneObjects = UnityEngine.Object.FindObjectsByType<PersistentWorldObject>(
                 FindObjectsInactive.Include,
                 FindObjectsSortMode.None);
 
@@ -580,7 +591,7 @@ namespace Game.Save
 
             string activeSceneName = SceneManager.GetActiveScene().name;
 
-            PersistentWorldObject[] sceneObjects = Object.FindObjectsByType<PersistentWorldObject>(
+            PersistentWorldObject[] sceneObjects = UnityEngine.Object.FindObjectsByType<PersistentWorldObject>(
                 FindObjectsInactive.Include,
                 FindObjectsSortMode.None);
 

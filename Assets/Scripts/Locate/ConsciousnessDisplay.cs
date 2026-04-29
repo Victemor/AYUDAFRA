@@ -1,7 +1,10 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STRUCT: LocalizedConsciousnessEntry
@@ -9,56 +12,66 @@ using UnityEngine;
 
 /// <summary>
 /// Representa una entrada del sistema de conciencia que puede re-traducirse.
-/// Guarda la CLAVE de localización y los argumentos de formato en lugar del
-/// texto ya traducido, permitiendo reconstruir el texto en cualquier idioma
-/// incluso después de haberse "escrito" en pantalla.
+/// Guarda la referencia de localización (tableName + key) o texto raw,
+/// permitiendo reconstruir el texto en cualquier idioma en cualquier momento.
+///
+/// Migración desde LocalizationManager:
+/// La resolución ya no puede ser síncrona porque Unity Localization es async.
+/// El texto se resuelve via <see cref="LocalizedString.GetLocalizedStringAsync"/>
+/// dentro de <see cref="ConsciousnessDisplay.RenderEntriesAsync"/>.
 /// </summary>
 [Serializable]
 public struct LocalizedConsciousnessEntry
 {
     /// <summary>
-    /// Clave de localización. Si es null o vacío, se usa <see cref="RawText"/> directamente
-    /// (para entradas que no son localizadas, como nombres propios generados dinámicamente).
+    /// Nombre de la tabla de localización (ej. "Tabla 1").
+    /// Vacío si la entrada usa RawText.
+    /// </summary>
+    public string TableName;
+
+    /// <summary>
+    /// Clave de localización dentro de la tabla (ej. "F0008").
+    /// Vacío si la entrada usa RawText.
     /// </summary>
     public string LocalizationKey;
 
     /// <summary>
-    /// Argumentos para string.Format aplicados sobre el texto localizado.
-    /// Ejemplo: si el texto es "Fragmento {0} encontrado", args[0] sería el nombre del fragmento.
+    /// Argumentos de formato opcionales. Se aplican con string.Format sobre
+    /// el texto ya resuelto. Útil para textos como "Fragmento {0} encontrado".
     /// </summary>
     public object[] FormatArgs;
 
     /// <summary>
-    /// Texto fijo no localizable. Se usa cuando <see cref="LocalizationKey"/> está vacío.
-    /// Útil para contenido generado proceduralmente que no existe en las tablas de traducción.
+    /// Texto fijo no localizable. Se usa cuando LocalizationKey está vacío.
+    /// Útil para contenido generado proceduralmente.
     /// </summary>
     public string RawText;
 
-    /// <summary>
-    /// Construye una entrada localizable con argumentos de formato opcionales.
-    /// </summary>
-    public static LocalizedConsciousnessEntry FromKey(string key, params object[] args)
-        => new() { LocalizationKey = key, FormatArgs = args };
+    /// <summary>True si esta entrada tiene referencia de localización válida.</summary>
+    public bool IsLocalized =>
+        !string.IsNullOrWhiteSpace(TableName) &&
+        !string.IsNullOrWhiteSpace(LocalizationKey);
 
     /// <summary>
-    /// Construye una entrada con texto fijo, no sujeta a localización.
+    /// Crea una entrada localizable. TableName por defecto es "Tabla 1".
+    /// </summary>
+    public static LocalizedConsciousnessEntry FromKey(
+        string key,
+        string tableName = "Tabla 1",
+        params object[] args)
+        => new() { TableName = tableName, LocalizationKey = key, FormatArgs = args };
+
+    /// <summary>
+    /// Crea una entrada con texto fijo, sin localización.
     /// </summary>
     public static LocalizedConsciousnessEntry FromRaw(string rawText)
         => new() { RawText = rawText };
 
     /// <summary>
-    /// Resuelve el texto final de esta entrada según el idioma activo.
+    /// Construye el <see cref="LocalizedString"/> para resolución async.
+    /// Solo llamar cuando <see cref="IsLocalized"/> es true.
     /// </summary>
-    public string Resolve()
-    {
-        if (!string.IsNullOrEmpty(LocalizationKey))
-        {
-            return (FormatArgs is { Length: > 0 })
-                ? LocalizationManager.Instance.GetTextFormatted(LocalizationKey, FormatArgs)
-                : LocalizationManager.Instance.GetText(LocalizationKey);
-        }
-        return RawText ?? string.Empty;
-    }
+    public LocalizedString ToLocalizedString() => new LocalizedString(TableName, LocalizationKey);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -66,17 +79,21 @@ public struct LocalizedConsciousnessEntry
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Gestiona la pantalla/panel del sistema de conciencia.
-/// Mantiene un historial de entradas como <see cref="LocalizedConsciousnessEntry"/>
-/// en lugar de strings ya traducidos, lo que permite re-renderizar todo el
-/// historial correctamente cuando el idioma cambia mid-session.
-/// 
-/// El panel comienza vacío; es el sistema de acciones quien llama a
-/// <see cref="AddEntry"/> para escribir contenido aquí.
+/// Gestiona el panel del sistema de conciencia.
+/// Mantiene el historial como <see cref="LocalizedConsciousnessEntry"/> en lugar
+/// de strings ya traducidos, permitiendo re-renderizar todo en cualquier idioma
+/// cuando el jugador cambia de idioma mid-session.
+///
+/// Cambio clave vs versión anterior:
+/// - Elimina dependencia de <c>LocalizationManager</c> (sistema custom eliminado).
+/// - Usa <see cref="LocalizationSettings.SelectedLocaleChanged"/> para detectar
+///   cambios de idioma y re-renderizar inmediatamente, sin necesidad de recargar escena.
+/// - <c>RenderEntries()</c> ahora es una coroutine asíncrona porque Unity Localization
+///   no puede resolver textos de forma síncrona.
 /// </summary>
 public class ConsciousnessDisplay : MonoBehaviour
 {
-    // ─── Inspector ────────────────────────────────────────────────────────────
+    #region Inspector
 
     [Tooltip("Componente TMP_Text donde se renderiza el texto de conciencia acumulado.")]
     [SerializeField] private TMP_Text consciousnessText;
@@ -84,105 +101,195 @@ public class ConsciousnessDisplay : MonoBehaviour
     [Tooltip("Separador entre entradas. Puede ser '\\n', '\\n\\n', ' • ', etc.")]
     [SerializeField] private string entrySeparator = "\n";
 
-    // ─── Estado ───────────────────────────────────────────────────────────────
+    #endregion
 
-    private readonly List<LocalizedConsciousnessEntry> _entries = new();
+    #region Private Fields
 
-    // ─── Unity Lifecycle ──────────────────────────────────────────────────────
+    private readonly List<LocalizedConsciousnessEntry> entries = new();
+    private Coroutine renderCoroutine;
+
+    #endregion
+
+    #region Unity Lifecycle
 
     private void OnEnable()
     {
-        LocalizationManager.OnLanguageChanged += OnLanguageChanged;
+        LocalizationSettings.SelectedLocaleChanged += HandleLocaleChanged;
     }
 
     private void OnDisable()
     {
-        LocalizationManager.OnLanguageChanged -= OnLanguageChanged;
+        LocalizationSettings.SelectedLocaleChanged -= HandleLocaleChanged;
+
+        if (renderCoroutine != null)
+        {
+            StopCoroutine(renderCoroutine);
+            renderCoroutine = null;
+        }
     }
 
-    // ─── API Pública ──────────────────────────────────────────────────────────
+    #endregion
+
+    #region Public API
 
     /// <summary>
-    /// Añade una nueva entrada localizable al panel de conciencia.
-    /// Llamar desde el sistema de acciones cuando una condición se cumple.
+    /// Añade una entrada localizada usando tabla + clave.
+    /// Por defecto busca en "Tabla 1".
     /// </summary>
-    /// <param name="key">Clave de localización del texto a mostrar.</param>
+    /// <param name="key">Clave en la tabla de localización (ej. "F0008").</param>
+    /// <param name="tableName">Nombre de la tabla. Por defecto "Tabla 1".</param>
     /// <param name="args">Argumentos opcionales para string.Format.</param>
-    public void AddEntry(string key, params object[] args)
+    public void AddEntry(string key, string tableName = "Tabla 1", params object[] args)
     {
-        _entries.Add(LocalizedConsciousnessEntry.FromKey(key, args));
-        RenderEntries();
+        entries.Add(LocalizedConsciousnessEntry.FromKey(key, tableName, args));
+        StartRender();
     }
 
     /// <summary>
     /// Añade texto fijo no localizado (nombres propios, valores numéricos, etc.).
     /// </summary>
-    /// <param name="rawText">Texto literal a mostrar sin traducción.</param>
     public void AddRawEntry(string rawText)
     {
-        _entries.Add(LocalizedConsciousnessEntry.FromRaw(rawText));
-        RenderEntries();
+        entries.Add(LocalizedConsciousnessEntry.FromRaw(rawText));
+        StartRender();
     }
 
     /// <summary>
-    /// Limpia todo el historial del panel de conciencia.
+    /// Limpia todo el historial del panel.
     /// </summary>
     public void ClearEntries()
     {
-        _entries.Clear();
+        entries.Clear();
+
+        if (renderCoroutine != null)
+        {
+            StopCoroutine(renderCoroutine);
+            renderCoroutine = null;
+        }
+
         if (consciousnessText != null)
+        {
             consciousnessText.text = string.Empty;
+        }
     }
 
     /// <summary>
-    /// Devuelve una copia de solo lectura del historial actual.
-    /// Útil para guardar el estado en el sistema de save.
+    /// Devuelve el historial actual (solo lectura).
     /// </summary>
-    public IReadOnlyList<LocalizedConsciousnessEntry> GetEntries() => _entries.AsReadOnly();
+    public IReadOnlyList<LocalizedConsciousnessEntry> GetEntries() => entries.AsReadOnly();
 
     /// <summary>
-    /// Restaura el historial desde datos guardados (ej: al cargar una partida).
+    /// Restaura el historial desde datos guardados.
     /// </summary>
-    /// <param name="savedEntries">Lista de entradas a restaurar.</param>
     public void RestoreEntries(IEnumerable<LocalizedConsciousnessEntry> savedEntries)
     {
-        _entries.Clear();
-        _entries.AddRange(savedEntries);
-        RenderEntries();
+        entries.Clear();
+        entries.AddRange(savedEntries);
+        StartRender();
     }
 
-    // ─── Privado ──────────────────────────────────────────────────────────────
+    #endregion
+
+    #region Private Methods
 
     /// <summary>
-    /// Re-renderiza todas las entradas cuando cambia el idioma.
-    /// Esto garantiza que incluso texto "ya escrito" aparezca en el nuevo idioma.
+    /// Detecta cambio de idioma y re-renderiza todo el historial
+    /// inmediatamente en el nuevo idioma, sin recargar la escena.
     /// </summary>
-    private void OnLanguageChanged(Language _) => RenderEntries();
+    private void HandleLocaleChanged(Locale locale) => StartRender();
 
-    private void RenderEntries()
+    /// <summary>
+    /// Cancela cualquier render en progreso y lanza uno nuevo.
+    /// </summary>
+    private void StartRender()
+    {
+        if (renderCoroutine != null)
+        {
+            StopCoroutine(renderCoroutine);
+        }
+
+        renderCoroutine = StartCoroutine(RenderEntriesAsync());
+    }
+
+    /// <summary>
+    /// Reconstruye el texto completo resolviendo cada entrada de forma asíncrona.
+    /// La resolución async es obligatoria porque Unity Localization carga las
+    /// tablas de forma diferida y no garantiza disponibilidad síncrona.
+    /// </summary>
+    private IEnumerator RenderEntriesAsync()
     {
         if (consciousnessText == null)
         {
-            Debug.LogWarning("[ConsciousnessDisplay] consciousnessText no asignado en el Inspector.");
-            return;
+            Debug.LogWarning("[ConsciousnessDisplay] consciousnessText no asignado.", this);
+            yield break;
         }
 
-        if (_entries.Count == 0)
+        if (entries.Count == 0)
         {
             consciousnessText.text = string.Empty;
-            return;
+            renderCoroutine = null;
+            yield break;
         }
 
-        // Construye el texto resolviendo cada entrada en el idioma actual.
-        // System.Text.StringBuilder evita allocations excesivas en listas largas.
-        var sb = new System.Text.StringBuilder();
-        for (int i = 0; i < _entries.Count; i++)
+        var resolved = new string[entries.Count];
+
+        for (int i = 0; i < entries.Count; i++)
         {
-            sb.Append(_entries[i].Resolve());
-            if (i < _entries.Count - 1)
+            LocalizedConsciousnessEntry entry = entries[i];
+
+            if (entry.IsLocalized)
+            {
+                var handle = entry.ToLocalizedString().GetLocalizedStringAsync();
+                yield return handle;
+
+                if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
+                {
+                    resolved[i] = $"[{entry.LocalizationKey}]";
+                    continue;
+                }
+
+                // Aplica argumentos de formato si los hay.
+                if (entry.FormatArgs is { Length: > 0 })
+                {
+                    try
+                    {
+                        resolved[i] = string.Format(handle.Result, entry.FormatArgs);
+                    }
+                    catch (FormatException e)
+                    {
+                        Debug.LogWarning(
+                            $"[ConsciousnessDisplay] Error de formato en clave '{entry.LocalizationKey}': {e.Message}",
+                            this);
+
+                        resolved[i] = handle.Result;
+                    }
+                }
+                else
+                {
+                    resolved[i] = handle.Result;
+                }
+            }
+            else
+            {
+                resolved[i] = entry.RawText ?? string.Empty;
+            }
+        }
+
+        var sb = new System.Text.StringBuilder();
+
+        for (int i = 0; i < resolved.Length; i++)
+        {
+            sb.Append(resolved[i]);
+
+            if (i < resolved.Length - 1)
+            {
                 sb.Append(entrySeparator);
+            }
         }
 
         consciousnessText.text = sb.ToString();
+        renderCoroutine = null;
     }
+
+    #endregion
 }

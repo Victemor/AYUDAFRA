@@ -1,71 +1,91 @@
+using System.Collections;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 using UnityEngine.UI;
 
 /// <summary>
-/// Componente que conecta un botón de la UI con el sistema de localización.
-/// Al hacer clic, cambia el idioma global del juego al idioma configurado.
-/// 
-/// Adjuntar a cada botón de selección de idioma. No requiere código adicional
-/// en el OnClick del Inspector; la suscripción se hace por código.
+/// Botón que cambia el locale activo del juego al hacer clic.
+/// El cambio es inmediato: dispara <see cref="LocalizationSettings.SelectedLocaleChanged"/>
+/// que propaga la actualización a todos los sistemas suscritos
+/// (<see cref="LocalizedText"/>, <see cref="ConsciousnessDisplay"/>,
+/// <see cref="ThoughtUIManager"/>, etc.) sin recargar la escena.
+///
+/// Reemplaza la versión anterior que dependía de LocalizationManager
+/// (sistema custom eliminado en migración Opción A).
+///
+/// Setup: adjunta a cada botón de idioma y arrastra el asset Locale
+/// desde Assets/LocalizationSettings/Local/.
 /// </summary>
 [RequireComponent(typeof(Button))]
-public class LanguageSelectorButton : MonoBehaviour
+public sealed class LanguageSelectorButton : MonoBehaviour
 {
-    // ─── Inspector ────────────────────────────────────────────────────────────
+    private const string PrefsKey = "SelectedLocaleCode";
 
-    [Tooltip("Idioma que este botón seleccionará al ser presionado.")]
-    [SerializeField] private Language targetLanguage;
+    [Tooltip("Locale que este botón activa. " +
+             "Arrastra el asset desde Assets/LocalizationSettings/Local/.")]
+    [SerializeField] private Locale targetLocale;
 
-    [Tooltip("(Opcional) Si se asigna, este GameObject se activará cuando el idioma de este botón esté seleccionado, " +
-             "permitiendo mostrar un indicador visual de selección activa.")]
+    [Tooltip("GameObject que se activa cuando este idioma está seleccionado " +
+             "(indicador visual de selección activa).")]
     [SerializeField] private GameObject selectedIndicator;
 
-    // ─── Estado ───────────────────────────────────────────────────────────────
-
-    private Button _button;
-
-    // ─── Unity Lifecycle ──────────────────────────────────────────────────────
+    private Button button;
 
     private void Awake()
     {
-        _button = GetComponent<Button>();
+        button = GetComponent<Button>();
+    }
+
+    private IEnumerator Start()
+    {
+        // Espera que Unity Localization esté listo antes de actualizar el indicador.
+        yield return LocalizationSettings.InitializationOperation;
+        RefreshSelectedIndicator();
     }
 
     private void OnEnable()
     {
-        _button.onClick.AddListener(OnButtonClicked);
-        LocalizationManager.OnLanguageChanged += OnLanguageChanged;
-
-        // Sincroniza el indicador visual con el estado actual al habilitarse.
+        button.onClick.AddListener(OnButtonClicked);
+        LocalizationSettings.SelectedLocaleChanged += HandleLocaleChanged;
         RefreshSelectedIndicator();
     }
 
     private void OnDisable()
     {
-        _button.onClick.RemoveListener(OnButtonClicked);
-        LocalizationManager.OnLanguageChanged -= OnLanguageChanged;
+        button.onClick.RemoveListener(OnButtonClicked);
+        LocalizationSettings.SelectedLocaleChanged -= HandleLocaleChanged;
     }
-
-    // ─── Privado ──────────────────────────────────────────────────────────────
 
     private void OnButtonClicked()
     {
-        if (LocalizationManager.Instance == null)
+        if (targetLocale == null)
         {
-            Debug.LogError("[LanguageSelectorButton] LocalizationManager no encontrado en la escena.");
+            Debug.LogWarning("[LanguageSelectorButton] targetLocale no asignado.", this);
             return;
         }
-        LocalizationManager.Instance.SetLanguage(targetLanguage);
+
+        // Cambio inmediato: dispara SelectedLocaleChanged en todos los suscriptores.
+        LocalizationSettings.SelectedLocale = targetLocale;
+
+        // Persistencia como respaldo al selector automático de Unity Localization.
+        PlayerPrefs.SetString(PrefsKey, targetLocale.Identifier.Code);
+        PlayerPrefs.Save();
     }
 
-    private void OnLanguageChanged(Language newLanguage) => RefreshSelectedIndicator();
+    private void HandleLocaleChanged(Locale locale) => RefreshSelectedIndicator();
 
     private void RefreshSelectedIndicator()
     {
-        if (selectedIndicator == null) return;
-        if (LocalizationManager.Instance == null) return;
+        if (selectedIndicator == null || targetLocale == null)
+        {
+            return;
+        }
 
-        bool isActive = LocalizationManager.Instance.CurrentLanguage == targetLanguage;
-        selectedIndicator.SetActive(isActive);
+        Locale current = LocalizationSettings.SelectedLocale;
+        bool isSelected = current != null &&
+                          current.Identifier.Code == targetLocale.Identifier.Code;
+
+        selectedIndicator.SetActive(isSelected);
     }
 }

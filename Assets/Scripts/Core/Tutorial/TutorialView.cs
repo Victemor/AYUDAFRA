@@ -37,12 +37,24 @@ public class TutorialView : MonoBehaviour
     /// </summary>
     public void Show(string text, Sprite image, float offsetY)
     {
-        tutorialText.text = $"{text}";
+        tutorialText.text = text;
 
         ApplyImage(image);
         ApplyOffset(offsetY);
 
         StartFade(1f, true);
+    }
+
+    /// <summary>
+    /// Actualiza únicamente el texto visible sin re-ejecutar el fade.
+    /// Llamar cuando cambia el idioma mientras el tutorial ya está visible.
+    /// </summary>
+    public void UpdateText(string text)
+    {
+        if (tutorialText != null)
+        {
+            tutorialText.text = text;
+        }
     }
 
     /// <summary>
@@ -58,7 +70,7 @@ public class TutorialView : MonoBehaviour
         if (image == null)
         {
             tutorialImage.sprite = null;
-            tutorialImage.color = new Color(1, 1, 1, 0); // Transparente
+            tutorialImage.color = new Color(1, 1, 1, 0);
         }
         else
         {

@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 using Game.Data;
 using Game.Runtime;
 using Game.Core;
@@ -9,9 +11,12 @@ using Game.Core;
 /// Sistema central de tutoriales del juego.
 /// Controla visualización, persistencia y auto-cierre de instrucciones.
 ///
-/// Resolución de texto (prioridad descendente):
-/// 1. Si <c>instruction.LocalizedText</c> está asignado → ruta localizada (async).
-/// 2. Si no → <c>instruction.Text</c> directo (fallback, preserva textos existentes).
+/// Localización:
+/// - Usa <c>LocalizedText</c> (LocalizedString) si está asignado en <c>TutorialInstruction</c>.
+/// - El campo <c>Text</c> (string plano) queda solo como referencia visual para el diseñador
+///   y NO se ejecuta en la lógica. Si no hay LocalizedString asignado, el tutorial no muestra nada.
+/// - Al cambiar de idioma mientras un tutorial está abierto, el texto se re-resuelve y
+///   actualiza inmediatamente sin cerrar ni re-animar el panel.
 /// </summary>
 public class TutorialController : MonoBehaviour
 {
@@ -45,6 +50,7 @@ public class TutorialController : MonoBehaviour
     private Dictionary<string, TutorialInstruction> instructionMap;
     private string currentInstructionId;
     private TutorialInstruction currentInstruction;
+    private float currentOffsetY;
     private bool isSubscribedToSubState;
 
     public System.Action<string> OnInstructionClosed;
@@ -71,6 +77,9 @@ public class TutorialController : MonoBehaviour
         GameEvents.OnDropMoved                 += HandleDropMoved;
         GameEvents.OnDropRightClicked          += HandleDropRightClicked;
         GameEvents.OnInteractableClicked       += HandleInteractableClicked;
+
+        // Suscripción al cambio de idioma para actualizar el tutorial abierto.
+        LocalizationSettings.SelectedLocaleChanged += HandleLocaleChanged;
     }
 
     private void OnDisable()
@@ -83,6 +92,8 @@ public class TutorialController : MonoBehaviour
         GameEvents.OnDropMoved                 -= HandleDropMoved;
         GameEvents.OnDropRightClicked          -= HandleDropRightClicked;
         GameEvents.OnInteractableClicked       -= HandleInteractableClicked;
+
+        LocalizationSettings.SelectedLocaleChanged -= HandleLocaleChanged;
 
         UnsubscribeFromSubState();
     }
@@ -181,6 +192,7 @@ public class TutorialController : MonoBehaviour
     {
         currentInstructionId = id;
         currentInstruction   = instruction;
+        currentOffsetY       = offsetY;
 
         StartCoroutine(ShowInstructionAsync(instruction, offsetY));
 
@@ -191,42 +203,60 @@ public class TutorialController : MonoBehaviour
     }
 
     /// <summary>
-    /// Resuelve el texto de la instrucción y lo muestra.
-    ///
-    /// Prioridad:
-    /// 1. <c>LocalizedText</c> asignado → ruta localizada (async).
-    /// 2. <c>Text</c> no vacío → ruta raw directa (fallback, preserva textos existentes).
+    /// Resuelve el texto localizado y muestra el panel con fade.
+    /// Solo usa <c>LocalizedText</c> (LocalizedString). El campo <c>Text</c>
+    /// string plano queda solo como referencia visual para el diseñador.
     /// </summary>
     private IEnumerator ShowInstructionAsync(TutorialInstruction instruction, float offsetY)
     {
-        // ── Ruta localizada ──────────────────────────────────────────────────
-        if (instruction.LocalizedText != null && !instruction.LocalizedText.IsEmpty)
+        if (instruction.LocalizedText == null || instruction.LocalizedText.IsEmpty)
         {
-            var handle = instruction.LocalizedText.GetLocalizedStringAsync();
-            yield return handle;
-
-            if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
-            {
-                Debug.LogWarning(
-                    $"[TutorialController] No se pudo resolver LocalizedText para '{instruction.Id}'.",
-                    this);
-                yield break;
-            }
-
-            view.Show(handle.Result, instruction.Image, offsetY);
+            Debug.LogWarning(
+                $"[TutorialController] '{instruction.Id}' no tiene LocalizedText asignado. " +
+                "Asigna tabla y clave en el Inspector. El campo Text es solo referencia visual.",
+                this);
             yield break;
         }
 
-        // ── Ruta raw (fallback) ──────────────────────────────────────────────
-        if (!string.IsNullOrWhiteSpace(instruction.Text))
+        var handle = instruction.LocalizedText.GetLocalizedStringAsync();
+        yield return handle;
+
+        if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
         {
-            view.Show(instruction.Text, instruction.Image, offsetY);
+            Debug.LogWarning(
+                $"[TutorialController] No se pudo resolver LocalizedText para '{instruction.Id}'.",
+                this);
             yield break;
         }
 
-        Debug.LogWarning(
-            $"[TutorialController] Instrucción '{instruction.Id}' sin texto ni clave de localización.",
-            this);
+        view.Show(handle.Result, instruction.Image, offsetY);
+    }
+
+    /// <summary>
+    /// Re-resuelve y actualiza el texto del tutorial activo cuando cambia el idioma.
+    /// Usa <c>view.UpdateText()</c> para cambiar solo el texto sin re-animar el fade.
+    /// </summary>
+    private IEnumerator RefreshCurrentInstructionTextAsync()
+    {
+        if (currentInstruction == null)
+        {
+            yield break;
+        }
+
+        if (currentInstruction.LocalizedText == null || currentInstruction.LocalizedText.IsEmpty)
+        {
+            yield break;
+        }
+
+        var handle = currentInstruction.LocalizedText.GetLocalizedStringAsync();
+        yield return handle;
+
+        if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
+        {
+            yield break;
+        }
+
+        view.UpdateText(handle.Result);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -381,12 +411,23 @@ public class TutorialController : MonoBehaviour
     // Private — Event Handlers
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void HandleMemoryStateChanged(MemoryRuntimeData memory)
+    /// <summary>
+    /// Al cambiar de idioma, si hay un tutorial activo actualiza su texto inmediatamente
+    /// sin cerrar ni re-animar el panel.
+    /// </summary>
+    private void HandleLocaleChanged(Locale locale)
     {
-        if (memory == null)
+        if (!HasActiveTutorial)
         {
             return;
         }
+
+        StartCoroutine(RefreshCurrentInstructionTextAsync());
+    }
+
+    private void HandleMemoryStateChanged(MemoryRuntimeData memory)
+    {
+        if (memory == null) return;
 
         if (memory.CurrentState == MemoryState.Seen || memory.CurrentState == MemoryState.Completed)
         {
@@ -397,23 +438,18 @@ public class TutorialController : MonoBehaviour
     private void HandleMemoryConnectionChanged(string idA, string idB) =>
         TryAutoDismiss(TutorialDismissEvent.OnFragmentConnected);
 
-    /// <summary>GameEvents.OnFragmentRenamed es Action (sin parámetros).</summary>
     private void HandleFragmentRenamed() =>
         TryAutoDismiss(TutorialDismissEvent.OnFragmentRenamed);
 
-    /// <summary>GameEvents.OnDraggableInventoryChanged es Action (sin parámetros).</summary>
     private void HandleInventoryChanged() =>
         TryAutoDismiss(TutorialDismissEvent.OnInventoryChanged);
 
-    /// <summary>GameEvents.OnDropMoved es Action (sin parámetros).</summary>
     private void HandleDropMoved() =>
         TryAutoDismiss(TutorialDismissEvent.OnDropMoved);
 
-    /// <summary>GameEvents.OnDropRightClicked es Action (sin parámetros).</summary>
     private void HandleDropRightClicked() =>
         TryAutoDismiss(TutorialDismissEvent.OnDropRightClicked);
 
-    /// <summary>GameEvents.OnInteractableClicked es Action (sin parámetros).</summary>
     private void HandleInteractableClicked() =>
         TryAutoDismiss(TutorialDismissEvent.OnInteractableClicked);
 
@@ -454,10 +490,6 @@ public class TutorialController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// El dismiss se activa cuando el subestado SALE de EmotionSelection
-    /// (es decir, cuando la selección emocional acaba de completarse).
-    /// </summary>
     private void HandleSubStateChanged(GamePlaySubState previous, GamePlaySubState current)
     {
         if (previous == GamePlaySubState.EmotionSelection)
@@ -472,11 +504,7 @@ public class TutorialController : MonoBehaviour
 
     private void Log(string message)
     {
-        if (!debugLogs)
-        {
-            return;
-        }
-
+        if (!debugLogs) return;
         Debug.Log($"[TutorialController] {message}", this);
     }
 }

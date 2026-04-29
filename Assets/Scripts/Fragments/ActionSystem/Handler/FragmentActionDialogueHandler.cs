@@ -3,14 +3,9 @@ using UnityEngine;
 using Game.Data;
 
 /// <summary>
-/// Handler que ejecuta acciones del sistema de diálogo.
-///
-/// Lógica de resolución (prioridad descendente):
-/// 1. Si <c>action.LocalizedDialogText</c> está asignado → resuelve async y usa ruta localizada.
-/// 2. Si no → usa <c>action.DialogText</c> como texto plano directo (fallback).
-///
-/// Esto permite mantener los textos existentes sin migrar mientras se va
-/// añadiendo la localización de forma gradual entrada por entrada.
+/// Versión DIAGNÓSTICA del handler de diálogo.
+/// Reemplaza temporalmente el original para encontrar exactamente dónde falla.
+/// Una vez identificado el problema, vuelve a la versión limpia.
 /// </summary>
 public sealed class FragmentActionDialogueHandler
 {
@@ -36,52 +31,82 @@ public sealed class FragmentActionDialogueHandler
 
     private IEnumerator ExecuteDisplayDialoguePanel(FragmentAction action, MonoBehaviour host)
     {
+        Debug.Log("[DIAG-Dialogue] ► ExecuteDisplayDialoguePanel START", host);
+
+        // ── Check 1: DialogController ────────────────────────────────────────
         if (action.DialogController == null)
         {
-            Debug.LogWarning("[FragmentActionDialogueHandler] DialogueController no asignado.", host);
+            Debug.LogError("[DIAG-Dialogue] ✘ DialogController es NULL", host);
             yield break;
         }
+        Debug.Log("[DIAG-Dialogue] ✔ DialogController OK", host);
 
+        // ── Check 2: DialogPoint ─────────────────────────────────────────────
         if (action.DialogPoint == null)
         {
-            Debug.LogWarning("[FragmentActionDialogueHandler] DialogPoint no asignado.", host);
+            Debug.LogError("[DIAG-Dialogue] ✘ DialogPoint es NULL", host);
             yield break;
         }
+        Debug.Log($"[DIAG-Dialogue] ✔ DialogPoint OK → posición: {action.DialogPoint.position}", host);
 
-        // ── Ruta localizada ──────────────────────────────────────────────────
-        if (action.LocalizedDialogText != null && !action.LocalizedDialogText.IsEmpty)
+        // ── Check 3: LocalizedDialogText ─────────────────────────────────────
+        if (action.LocalizedDialogText == null)
         {
-            var handle = action.LocalizedDialogText.GetLocalizedStringAsync();
-            yield return handle;
-
-            if (!handle.IsDone || string.IsNullOrWhiteSpace(handle.Result))
-            {
-                Debug.LogWarning("[FragmentActionDialogueHandler] No se pudo resolver LocalizedDialogText.", host);
-                yield break;
-            }
-
-            action.DialogController.ShowText(handle.Result, action.DialogPoint.position);
+            Debug.LogError("[DIAG-Dialogue] ✘ LocalizedDialogText es NULL (campo no serializado)", host);
             yield break;
         }
 
-        // ── Ruta raw (fallback) ──────────────────────────────────────────────
-        if (!string.IsNullOrWhiteSpace(action.DialogText))
+        if (action.LocalizedDialogText.IsEmpty)
         {
-            action.DialogController.ShowText(action.DialogText, action.DialogPoint.position);
+            Debug.LogError("[DIAG-Dialogue] ✘ LocalizedDialogText está vacío (sin tabla/clave asignada)", host);
             yield break;
         }
 
-        Debug.LogWarning("[FragmentActionDialogueHandler] Ni LocalizedDialogText ni DialogText tienen contenido.", host);
+        string tableName = action.LocalizedDialogText.TableReference.TableCollectionName;
+        string key       = action.LocalizedDialogText.TableEntryReference.Key;
+        long   keyId     = action.LocalizedDialogText.TableEntryReference.KeyId;
+
+        Debug.Log($"[DIAG-Dialogue] ✔ LocalizedDialogText → Tabla: '{tableName}' | Key: '{key}' | KeyId: {keyId}", host);
+
+        // ── Check 4: Resolución async ─────────────────────────────────────────
+        Debug.Log("[DIAG-Dialogue] ► Iniciando GetLocalizedStringAsync...", host);
+
+        var handle = action.LocalizedDialogText.GetLocalizedStringAsync();
+        yield return handle;
+
+        Debug.Log($"[DIAG-Dialogue] ► Async completado. IsDone: {handle.IsDone} | Status: {handle.Status}", host);
+
+        if (!handle.IsDone)
+        {
+            Debug.LogError("[DIAG-Dialogue] ✘ Async no completó (IsDone = false)", host);
+            yield break;
+        }
+
+        if (string.IsNullOrWhiteSpace(handle.Result))
+        {
+            Debug.LogError($"[DIAG-Dialogue] ✘ Result vacío. La entrada '{key}'/'{keyId}' no existe en la tabla para el locale activo.", host);
+            yield break;
+        }
+
+        Debug.Log($"[DIAG-Dialogue] ✔ Texto resuelto: '{handle.Result}'", host);
+
+        // ── Check 5: Llamada a ShowText ───────────────────────────────────────
+        Debug.Log($"[DIAG-Dialogue] ► Llamando DialogController.ShowText en posición {action.DialogPoint.position}", host);
+
+        action.DialogController.ShowText(handle.Result, action.DialogPoint.position);
+
+        Debug.Log("[DIAG-Dialogue] ✔ ShowText llamado correctamente", host);
     }
 
     private void ExecuteHideDialoguePanel(FragmentAction action, MonoBehaviour host)
     {
         if (action.DialogController == null)
         {
-            Debug.LogWarning("[FragmentActionDialogueHandler] DialogueController no asignado.", host);
+            Debug.LogWarning("[DIAG-Dialogue] HideDialoguePanel: DialogController NULL", host);
             return;
         }
 
         action.DialogController.HideCurrent();
+        Debug.Log("[DIAG-Dialogue] HideDialoguePanel ejecutado", host);
     }
 }
