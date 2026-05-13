@@ -59,10 +59,13 @@ public sealed class UnifiedBallInput : MonoBehaviour
     private float maximumSwipeDuration = 0.5f;
 
     [SerializeField]
-    [Tooltip("Fracción mínima del gesto que debe ser vertical para disparar swipe. " +
-             "0.6 = el 60% del desplazamiento debe ser vertical.")]
-    [Range(0.4f, 0.9f)]
-    private float minimumVerticalDominance = 0.6f;
+    [Tooltip("Ángulo en grados desde cada eje cardinal dentro del cual se clasifica " +
+            "el swipe como ese cardinal. 35° = ±35° del eje = swipe cardinal puro. " +
+            "Reemplaza minimumVerticalDominance: ahora todos los swipes son reconocidos.")]
+    [Range(15f, 45f)]
+    private float swipeCardinalAngleThreshold = 35f;
+    
+
 
     [SerializeField]
     [Tooltip("Longitud en píxeles que equivale a intensidad máxima.")]
@@ -268,33 +271,54 @@ public sealed class UnifiedBallInput : MonoBehaviour
     #region Swipe Evaluation
 
     /// <summary>
-    /// Evalúa si el gesto que terminó califica como swipe vertical.
-    /// Solo dispara si la componente vertical es dominante y el gesto fue rápido.
+    /// Evalúa si el gesto califica como swipe y lo clasifica en 8 direcciones.
+    ///
+    /// CAMBIO: ya no requiere dominancia vertical. Cualquier swipe suficientemente
+    /// rápido y largo en CUALQUIER dirección genera un evento OnSwipeDetected.
+    /// El intent clasifica la dirección (Forward, Backward, Left, Right, Diagonal*)
+    /// para que ImpulseAccumulator y BrakeAccumulator filtren según su lógica.
+    ///
+    /// Razón: el sistema anterior descartaba swipes laterales por no pasar el filtro
+    /// de dominancia vertical (>=0.6), impidiendo que el jugador acelerara cambiando
+    /// de dirección con un swipe lateral.
     /// </summary>
     private void EvaluateSwipe(Vector2 endPosition)
     {
         float duration = Time.unscaledTime - touchStartTime;
-
+    
         if (duration <= 0f || duration > maximumSwipeDuration)
             return;
-
+    
         Vector2 delta  = endPosition - touchStart;
         float length   = delta.magnitude;
-
+    
         if (length < minimumSwipeLengthPx)
             return;
-
-        float verticalDominance = Mathf.Abs(delta.y) / length;
-
-        if (verticalDominance < minimumVerticalDominance)
-            return;
-
+    
         float speed     = length / duration;
         float intensity = CalculateIntensity(length, speed);
-        SwipeIntent intent = delta.y > 0f ? SwipeIntent.Forward : SwipeIntent.Backward;
-
-        SwipeData swipe = new SwipeData(delta.normalized, length, speed, intent, intensity);
-
+        Vector2 dir     = delta.normalized;
+    
+        // Clasificar dirección por ángulo respecto al eje Y positivo (arriba = Forward).
+        float angle = Mathf.Atan2(dir.x, dir.y) * Mathf.Rad2Deg; // rango -180 a 180
+    
+        SwipeIntent intent;
+    
+        if (Mathf.Abs(angle) <= swipeCardinalAngleThreshold)
+            intent = SwipeIntent.Forward;
+        else if (Mathf.Abs(angle) >= 180f - swipeCardinalAngleThreshold)
+            intent = SwipeIntent.Backward;
+        else if (angle >  (90f - swipeCardinalAngleThreshold) && angle <  (90f + swipeCardinalAngleThreshold))
+            intent = SwipeIntent.Right;
+        else if (angle < -(90f - swipeCardinalAngleThreshold) && angle > -(90f + swipeCardinalAngleThreshold))
+            intent = SwipeIntent.Left;
+        else if (dir.y >= 0f)
+            intent = dir.x > 0f ? SwipeIntent.DiagonalForwardRight : SwipeIntent.DiagonalForwardLeft;
+        else
+            intent = dir.x > 0f ? SwipeIntent.DiagonalBackwardRight : SwipeIntent.DiagonalBackwardLeft;
+    
+        SwipeData swipe = new SwipeData(dir, length, speed, intent, intensity);
+    
         if (debugInput)
         {
             Debug.Log(
@@ -303,7 +327,7 @@ public sealed class UnifiedBallInput : MonoBehaviour
                 $"Velocidad: {speed:F0}px/s | " +
                 $"Intensidad: {intensity:F2}");
         }
-
+    
         OnSwipeDetected?.Invoke(swipe);
     }
 

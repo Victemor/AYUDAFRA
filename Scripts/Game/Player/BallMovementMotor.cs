@@ -12,7 +12,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     [Header("Referencias")]
     [SerializeField][Tooltip("Rigidbody de la pelota.")]
     private Rigidbody rb;
-    [SerializeField][Tooltip("Controlador de rotación. Provee el forward actual de movimiento.")]
+    [SerializeField][Tooltip("Controlador de rotación.")]
     private SphereRotationController rotationController;
     [SerializeField][Tooltip("Acumulador de impulsos de avance.")]
     private ImpulseAccumulator impulseAccumulator;
@@ -32,7 +32,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     [Header("Fricción pasiva")]
     [SerializeField][Tooltip("Desaceleración en m/s² aplicada de forma pasiva cuando no hay input.")]
     private float passiveFriction = 0.8f;
-    [SerializeField][Tooltip("Velocidad mínima por debajo de la cual la pelota se detiene completamente.")]
+    [SerializeField][Tooltip("Velocidad mínima por debajo de la cual la pelota se detiene.")]
     private float stopThreshold = 0.08f;
 
     [Header("Slope Handling")]
@@ -55,13 +55,21 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     [Header("Barreras")]
     [SerializeField]
-    [Tooltip("Tiempo en segundos durante el cual se bloquea todo el steering y se ignoran nuevos rebotes " +
-             "tras un choque. Permite vuelo libre post-rebote sin que el steering interfiera. " +
-             "MÍNIMO RECOMENDADO: 0.08. Cero rompe el sistema.")]
+    [Tooltip("Tiempo de cooldown tras un rebote de barrera. Bloquea steering y previene doble rebote. " +
+             "Mínimo garantizado: 0.08s.")]
     private float barrierBounceCooldownDuration = 0.1f;
 
     [SerializeField][Tooltip("Velocidad mínima conservada al rebotar contra una barrera.")]
     private float minimumBarrierBounceSpeed = 0.25f;
+
+    [SerializeField]
+    [Tooltip("Cuánto debe apuntar el forward del jugador AWAY de la barrera (dot product) para " +
+             "reanudar el steering tras un rebote. 0 = cualquier dirección reanudan. " +
+             "0.3 = necesita apuntar al menos 17° fuera de la barrera. " +
+             "Esto evita que el steering vuelva a empujar la bola contra la barrera " +
+             "antes de que el jugador haya cambiado de dirección.")]
+    [Range(0f, 0.8f)]
+    private float barrierEscapeForwardThreshold = 0.15f;
 
     [Header("Deslizamiento lateral")]
     [SerializeField][Tooltip("Factor de deslizamiento lateral al estar bloqueado por una pared.")][Range(0f, 1f)]
@@ -71,12 +79,11 @@ public sealed class BallMovementMotor : MonoBehaviour
     [SerializeField][Tooltip("Velocidad máxima en grados/s a la que la velocidad planar sigue al forward actual.")]
     private float steeringDegreesPerSecond = 240f;
     [SerializeField]
-    [Tooltip("Ángulo de diferencia (grados) a partir del cual se aplica el 100% de steeringDegreesPerSecond. " +
-             "15 grados = curva suave sin ser restrictiva para giros intencionales.")]
+    [Tooltip("Ángulo de diferencia (grados) a partir del cual se aplica el 100% de steeringDegreesPerSecond.")]
     [Range(5f, 90f)]
     private float steeringAngleForFullRate = 15f;
     [SerializeField]
-    [Tooltip("Exponente de la curva de respuesta del steering. 1=lineal, 1.5=suave (recomendado), 2=cuadrático.")]
+    [Tooltip("Exponente de la curva de respuesta del steering. 1=lineal, 1.5=suave.")]
     [Range(1f, 3f)]
     private float steeringResponseExponent = 1.5f;
 
@@ -84,37 +91,43 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     #region Runtime
 
-    private float pendingImpulse;
-    private float pendingBrake;
-    private bool  hasNewImpulse;
-    private bool  hasNewBrake;
+    private float   pendingImpulse;
+    private float   pendingBrake;
+    private bool    hasNewImpulse;
+    private bool    hasNewBrake;
 
     private float   impactRecoveryTimer;
     private Vector3 impactVelocity;
 
-    private bool  isForceStopping;
-    private float forcedStopDeceleration;
+    private bool    isForceStopping;
+    private float   forcedStopDeceleration;
 
-    private float speedBoostMultiplier    = 1f;
-    private float jumpBypassTimer;
-    private float barrierBounceCooldownTimer;
+    private float   speedBoostMultiplier     = 1f;
+    private float   jumpBypassTimer;
+    private float   barrierBounceCooldownTimer;
 
-    private bool  maintainCurrentSpeed;
-    private float joystickBrakeDeceleration;
-    private float maintainedSpeedTarget;
+    // Estado de escape post-barrera:
+    // El steering permanece bloqueado hasta que el jugador apunte away de la última normal de barrera.
+    // Esto evita que el steering vuelva a empujar la bola hacia la barrera después del rebote.
+    private bool    barrierEscapeSteeringLocked;
+    private Vector3 lastBarrierImpactNormal;
+
+    private bool    maintainCurrentSpeed;
+    private float   joystickBrakeDeceleration;
+    private float   maintainedSpeedTarget;
 
     #endregion
 
     #region Properties
 
-    public float   CurrentSpeed          => GetPlanarVelocity(rb.linearVelocity).magnitude;
-    public float   CurrentPlanarVelocity => CurrentSpeed;
-    public Vector3 CurrentVelocity       => rb.linearVelocity;
-    public float   MaxSpeed              => maxSpeed;
+    public float   CurrentSpeed           => GetPlanarVelocity(rb.linearVelocity).magnitude;
+    public float   CurrentPlanarVelocity  => CurrentSpeed;
+    public Vector3 CurrentVelocity        => rb.linearVelocity;
+    public float   MaxSpeed               => maxSpeed;
     public bool    IsRecoveringFromImpact => impactRecoveryTimer > 0f;
     public Vector3 LastValidMoveDirection =>
         rotationController != null ? rotationController.CurrentForward : Vector3.forward;
-    public bool CanProcessBarrierBounce  => barrierBounceCooldownTimer <= 0f;
+    public bool CanProcessBarrierBounce   => barrierBounceCooldownTimer <= 0f;
 
     #endregion
 
@@ -193,9 +206,6 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void OnValidate()
     {
-        // Garantiza que el cooldown nunca sea 0 accidentalmente en el Inspector.
-        // Con 0, el steering se reactiva en el mismo frame del rebote y vuelve a
-        // empujar la bola contra la barrera.
         barrierBounceCooldownDuration = Mathf.Max(0.08f, barrierBounceCooldownDuration);
     }
 
@@ -223,18 +233,20 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     public void Stop()
     {
-        maintainedSpeedTarget      = 0f;
-        pendingImpulse             = 0f;
-        pendingBrake               = 0f;
-        hasNewImpulse              = false;
-        hasNewBrake                = false;
-        impactRecoveryTimer        = 0f;
-        impactVelocity             = Vector3.zero;
-        isForceStopping            = false;
-        forcedStopDeceleration     = 0f;
-        barrierBounceCooldownTimer = 0f;
-        maintainCurrentSpeed       = false;
-        joystickBrakeDeceleration  = 0f;
+        maintainedSpeedTarget           = 0f;
+        pendingImpulse                  = 0f;
+        pendingBrake                    = 0f;
+        hasNewImpulse                   = false;
+        hasNewBrake                     = false;
+        impactRecoveryTimer             = 0f;
+        impactVelocity                  = Vector3.zero;
+        isForceStopping                 = false;
+        forcedStopDeceleration          = 0f;
+        barrierBounceCooldownTimer      = 0f;
+        barrierEscapeSteeringLocked     = false;
+        lastBarrierImpactNormal         = Vector3.zero;
+        maintainCurrentSpeed            = false;
+        joystickBrakeDeceleration       = 0f;
 
         rb.linearVelocity  = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
@@ -255,10 +267,10 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     public void MultiplySpeed(float multiplier)
     {
-        float clamped     = Mathf.Clamp01(multiplier);
+        float c           = Mathf.Clamp01(multiplier);
         Vector3 v         = rb.linearVelocity;
-        v.x              *= clamped;
-        v.z              *= clamped;
+        v.x              *= c;
+        v.z              *= c;
         rb.linearVelocity = v;
     }
 
@@ -279,7 +291,15 @@ public sealed class BallMovementMotor : MonoBehaviour
         rb.linearVelocity = new Vector3(recoilVelocity.x, c.y, recoilVelocity.z);
     }
 
-    public void ApplyBarrierBounce(Vector3 bounceDirection, float bounceSpeed)
+    /// <summary>
+    /// Aplica rebote de barrera.
+    ///
+    /// Además del cooldown temporal, activa el barrierEscapeSteeringLock:
+    /// el steering permanece bloqueado hasta que el jugador gire su cara (currentForward)
+    /// suficientemente lejos de la normal de la barrera impactada. Esto evita el loop donde
+    /// el steering vuelve a empujar la bola hacia la barrera después del cooldown.
+    /// </summary>
+    public void ApplyBarrierBounce(Vector3 bounceDirection, float bounceSpeed, Vector3 barrierNormal)
     {
         if (!CanProcessBarrierBounce) return;
 
@@ -287,21 +307,28 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (bounceDirection.sqrMagnitude < 0.0001f) return;
         bounceDirection.Normalize();
 
-        float speed       = Mathf.Max(minimumBarrierBounceSpeed, bounceSpeed);
-        Vector3 c         = rb.linearVelocity;
-        rb.linearVelocity = new Vector3(bounceDirection.x * speed, c.y, bounceDirection.z * speed);
+        float speed        = Mathf.Max(minimumBarrierBounceSpeed, bounceSpeed);
+        Vector3 c          = rb.linearVelocity;
+        rb.linearVelocity  = new Vector3(bounceDirection.x * speed, c.y, bounceDirection.z * speed);
         rb.angularVelocity = Vector3.zero;
 
-        // Resetear el target de velocidad mantenida al valor post-rebote.
-        // Sin esto, EnforceSpeedMaintenance restaura la velocidad pre-impacto y
-        // la bola vuelve a empujar contra la barrera a alta velocidad.
+        // Reset velocidad mantenida para no restaurar la velocidad pre-impacto.
         maintainedSpeedTarget = speed;
 
-        barrierBounceCooldownTimer = Mathf.Max(0.08f, barrierBounceCooldownDuration);
-        pendingImpulse             = 0f;
-        pendingBrake               = 0f;
-        hasNewImpulse              = false;
-        hasNewBrake                = false;
+        barrierBounceCooldownTimer  = Mathf.Max(0.08f, barrierBounceCooldownDuration);
+
+        // Activar el lock de escape: el steering no reanuda hasta que el jugador
+        // haya girado su cara suficientemente away de esta barrera.
+        barrierEscapeSteeringLocked = true;
+        lastBarrierImpactNormal     = barrierNormal;
+        lastBarrierImpactNormal.y   = 0f;
+        if (lastBarrierImpactNormal.sqrMagnitude > 0.0001f)
+            lastBarrierImpactNormal.Normalize();
+
+        pendingImpulse = 0f;
+        pendingBrake   = 0f;
+        hasNewImpulse  = false;
+        hasNewBrake    = false;
     }
 
     public void ApplyBarrierDeflect(Vector3 deflectedVelocity)
@@ -309,7 +336,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         Vector3 d = deflectedVelocity;
         d.y = 0f;
         if (d.sqrMagnitude < 0.0001f) return;
-        ApplyBarrierBounce(d.normalized, d.magnitude);
+        ApplyBarrierBounce(d.normalized, d.magnitude, -d.normalized);
     }
 
     public void SuppressDrive(float duration)
@@ -436,10 +463,10 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         Vector3 fwd = GetMovementForward();
 
-        // Cuando hay bloqueo de barrera, proyectar el forward sobre el plano de la barrera
-        // antes de aplicar el impulso. Sin esto, el swipe añade velocidad INTO la barrera,
-        // ResolveBlockedVelocity la cancela y la bola no se mueve.
-        // Con la proyección, el swipe acelera paralelo a la barrera permitiendo el escape.
+        // Al recibir un impulso (swipe) mientras se está bloqueado por barrera,
+        // proyectar el forward sobre el plano de la barrera para que el swipe
+        // produzca movimiento paralelo/fuera de la barrera en lugar de INTO ella.
+        // Además, este swipe intencional libera el escape lock.
         if (collisionResponder != null && collisionResponder.HasBlockingContact)
         {
             Vector3 blockNormal = collisionResponder.BlockingNormal;
@@ -450,13 +477,19 @@ public sealed class BallMovementMotor : MonoBehaviour
                 Vector3 projectedFwd = Vector3.ProjectOnPlane(fwd, blockNormal);
                 projectedFwd.y = 0f;
                 if (projectedFwd.sqrMagnitude > 0.01f)
+                {
                     fwd = projectedFwd.normalized;
+                    // Un swipe intencional libera el escape lock aunque el forward aún apunte
+                    // hacia la barrera — el jugador está dando input activo.
+                    barrierEscapeSteeringLocked = false;
+                }
             }
         }
-        Vector3 v    = rb.linearVelocity;
-        Vector3 p    = GetPlanarVelocity(v) + fwd * pendingImpulse;
-        float eMax   = maxSpeed * speedBoostMultiplier;
-        float sMax   = ResolveSlopeAdjustedMax(fwd, eMax);
+
+        Vector3 v  = rb.linearVelocity;
+        Vector3 p  = GetPlanarVelocity(v) + fwd * pendingImpulse;
+        float eMax = maxSpeed * speedBoostMultiplier;
+        float sMax = ResolveSlopeAdjustedMax(fwd, eMax);
 
         if (p.magnitude > sMax) p = p.normalized * sMax;
         p                 = ResolveBlockedVelocity(p);
@@ -527,32 +560,71 @@ public sealed class BallMovementMotor : MonoBehaviour
     }
 
     /// <summary>
-    /// Rota la velocidad planar hacia el forward objetivo del jugador.
+    /// Rota la velocidad planar hacia el forward objetivo.
     ///
-    /// Diseño deliberadamente simple: NO hay lógica especial de contacto con barrera.
-    /// Con MeshCollider, el motor de física maneja el deslizamiento naturalmente —
-    /// la componente INTO la barrera se cancela por la resolución de contacto de Unity,
-    /// y la componente paralela produce el deslizamiento limpio.
-    /// Cualquier intento de "proyectar" el forward manualmente generaba atrapamiento.
+    /// Lógica de bloqueo en dos fases:
     ///
-    /// El único bloqueo permitido es durante barrierBounceCooldownTimer para dar
-    /// vuelo libre post-rebote sin que el steering re-dirija hacia la barrera.
+    /// FASE 1 — barrierBounceCooldownTimer > 0:
+    ///   Bloqueo absoluto. La bola viaja libre en la dirección del rebote.
+    ///   Dura el tiempo de cooldown configurado (mínimo 0.08s).
+    ///
+    /// FASE 2 — barrierEscapeSteeringLocked = true (después del cooldown):
+    ///   Bloqueo condicional. El steering permanece desactivado hasta que el jugador
+    ///   haya girado su cara (currentForward) suficientemente lejos de la barrera.
+    ///   Se evalúa comparando currentForward contra lastBarrierImpactNormal.
+    ///   Cuando Dot(forward, barrierNormal) >= barrierEscapeForwardThreshold, el lock
+    ///   se libera automáticamente y el steering normal reanuda.
+    ///
+    ///   Esto evita el loop: cooldown expira → steering retoma → currentForward apunta
+    ///   hacia la barrera → bola vuelve a la barrera → rebote → loop infinito.
     /// </summary>
     private void ApplySteering()
     {
+        // Fase 1: cooldown absoluto post-rebote.
         if (barrierBounceCooldownTimer > 0f)
             return;
 
+        // Fase 2: bloqueo condicional hasta que el jugador apunte away de la barrera.
+        if (barrierEscapeSteeringLocked)
+        {
+            if (lastBarrierImpactNormal.sqrMagnitude < 0.0001f)
+            {
+                // Normal no válida, liberar el lock.
+                barrierEscapeSteeringLocked = false;
+            }
+            else
+            {
+                Vector3 fwdCheck = rotationController != null
+                    ? rotationController.CurrentForward
+                    : transform.forward;
+                fwdCheck.y = 0f;
+
+                if (fwdCheck.sqrMagnitude > 0.0001f)
+                {
+                    // Liberar cuando el forward apunta suficientemente away de la barrera
+                    // (componente positiva en la dirección de la normal = alejándose).
+                    float awayDot = Vector3.Dot(fwdCheck.normalized, lastBarrierImpactNormal);
+                    if (awayDot >= barrierEscapeForwardThreshold)
+                    {
+                        barrierEscapeSteeringLocked = false;
+                    }
+                    else
+                    {
+                        return; // Jugador aún apunta hacia la barrera, mantener bloqueo.
+                    }
+                }
+            }
+        }
+
+        // Steering normal.
         Vector3 v    = rb.linearVelocity;
         Vector3 p    = GetPlanarVelocity(v);
         float speed  = p.magnitude;
-
         if (speed <= stopThreshold) return;
 
         Vector3 targetFwd = rotationController != null
             ? rotationController.CurrentForward
             : Vector3.forward;
-
         targetFwd.y = 0f;
         if (targetFwd.sqrMagnitude < 0.0001f) return;
         targetFwd.Normalize();
@@ -562,15 +634,11 @@ public sealed class BallMovementMotor : MonoBehaviour
         float normalizedAngle = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
         float effectiveRate   = steeringDegreesPerSecond * Mathf.Pow(normalizedAngle, steeringResponseExponent);
 
-        Vector3 steered    = Vector3.RotateTowards(currentDir, targetFwd,
+        Vector3 steered       = Vector3.RotateTowards(currentDir, targetFwd,
             effectiveRate * Mathf.Deg2Rad * Time.fixedDeltaTime, 0f);
 
-        // Eliminar la componente INTO la barrera del resultado del steering.
-        // ResolveBlockedVelocity ya existe y funciona con impulsos — la aplicamos
-        // aquí también para que el steering nunca empuje la bola dentro de la barrera.
-        // Cuando HasBlockingContact = false (sin contacto), devuelve el vector sin cambios.
-        Vector3 steeredVelocity = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
-        rb.linearVelocity = steeredVelocity;
+        Vector3 newVel        = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
+        rb.linearVelocity     = newVel;
     }
 
     #endregion

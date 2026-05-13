@@ -221,7 +221,7 @@ public sealed class BallCollisionResponder : MonoBehaviour
                 $"FrontalDot: {frontalDot:F2} | Reflected: {reflectedDirection}", this);
         }
 
-        movementMotor.ApplyBarrierBounce(reflectedDirection, bounceSpeed);
+        movementMotor.ApplyBarrierBounce(reflectedDirection, bounceSpeed, contactNormal);
     }
 
     private void HandleImmovableCollision(Collision collision, Collider otherCollider)
