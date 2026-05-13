@@ -2,12 +2,18 @@ using UnityEngine;
 
 /// <summary>
 /// Zona de vacío que elimina al jugador al entrar en su volumen trigger.
-/// 
+///
 /// Responsabilidades:
-/// - Validar capas que pueden activar muerte.
-/// - Resolver el BallStateController del objeto que entró.
-/// - Disparar la muerte del jugador.
-/// - Exponer logs de depuración controlados.
+/// <list type="bullet">
+///   <item>Filtrar colisiones por <see cref="LayerMask"/>.</item>
+///   <item>Resolver el <see cref="BallStateController"/> del objeto entrante.</item>
+///   <item>Disparar <see cref="BallStateController.Die"/> una vez validado.</item>
+///   <item>Actuar como receptor central de sus proxies hijos (<see cref="VoidZoneTriggerProxy"/>)
+///         a través de <see cref="ProcessTriggerEnter"/>.</item>
+/// </list>
+///
+/// Configuración en runtime: <see cref="VoidZoneGenerator"/> usa <see cref="CopySettingsFrom"/>
+/// para propagar la configuración del VoidZone origen hacia el generado proceduralmente.
 /// </summary>
 [RequireComponent(typeof(Collider))]
 public sealed class VoidZone : MonoBehaviour
@@ -15,36 +21,37 @@ public sealed class VoidZone : MonoBehaviour
     #region Inspector
 
     [Header("Filtro")]
-    [Tooltip("Capas válidas para activar la zona de vacío.")]
-    [SerializeField] private LayerMask playerLayers;
+    [SerializeField]
+    [Tooltip("Capas cuyos colliders pueden activar la muerte del jugador. " +
+             "Debe incluir al menos la capa del jugador; dejar vacío desactiva silenciosamente la zona.")]
+    private LayerMask playerLayers;
 
     [Header("Debug")]
-    [Tooltip("Activa logs de depuración de la zona de vacío.")]
-    [SerializeField] private bool enableDebugLogs;
+    [SerializeField]
+    [Tooltip("Activa logs de depuración paso a paso de cada entrada al trigger.")]
+    private bool enableDebugLogs;
 
-    [Tooltip("Dibuja avisos si el collider no está configurado como trigger.")]
-    [SerializeField] private bool validateTriggerConfiguration = true;
+    [SerializeField]
+    [Tooltip("Emite una advertencia en Awake si el Collider local no está configurado como Trigger.")]
+    private bool validateTriggerConfiguration = true;
 
     #endregion
 
     #region Properties
 
-    /// <summary>
-    /// Capas válidas para activar la zona de vacío.
-    /// </summary>
+    /// <summary>Capas válidas para activar la zona de vacío.</summary>
     public LayerMask PlayerLayers => playerLayers;
 
-    /// <summary>
-    /// Indica si los logs de depuración están activos.
-    /// </summary>
+    /// <summary>Indica si los logs de depuración están activos.</summary>
     public bool EnableDebugLogs => enableDebugLogs;
 
     #endregion
 
+    #region Unity Lifecycle
+
     private void Reset()
     {
-        Collider triggerCollider = GetComponent<Collider>();
-        triggerCollider.isTrigger = true;
+        GetComponent<Collider>().isTrigger = true;
     }
 
     private void Awake()
@@ -52,34 +59,28 @@ public sealed class VoidZone : MonoBehaviour
         ValidateConfiguration();
     }
 
-    /// <summary>
-    /// Permite configurar por código las capas válidas.
-    /// </summary>
-    public void SetPlayerLayers(LayerMask layers)
+    private void OnTriggerEnter(Collider other)
     {
-        playerLayers = layers;
+        ProcessTriggerEnter(other, gameObject.name);
     }
 
-    /// <summary>
-    /// Permite activar o desactivar logs por código.
-    /// </summary>
-    public void SetDebugLogs(bool enabled)
-    {
-        enableDebugLogs = enabled;
-    }
+    #endregion
+
+    #region Public API — Trigger Entry
 
     /// <summary>
     /// Procesa una posible entrada a la zona de muerte.
-    /// 
-    /// Este método puede ser llamado por el propio collider o por un proxy hijo.
+    /// Puede ser invocado por el propio Collider o por un <see cref="VoidZoneTriggerProxy"/> hijo.
     /// </summary>
+    /// <param name="other">Collider que entró en el trigger.</param>
+    /// <param name="sourceName">Nombre del objeto que origina el evento. Usado solo en logs de debug.</param>
     public void ProcessTriggerEnter(Collider other, string sourceName)
     {
         if (other == null)
         {
             if (enableDebugLogs)
             {
-                Debug.LogWarning($"[VOID ZONE] Trigger received null collider from '{sourceName}'.", this);
+                Debug.LogWarning($"[VOID ZONE] Null collider recibido desde '{sourceName}'.", this);
             }
 
             return;
@@ -88,8 +89,8 @@ public sealed class VoidZone : MonoBehaviour
         if (enableDebugLogs)
         {
             Debug.Log(
-                $"[VOID ZONE] Trigger enter detected. " +
-                $"Source='{sourceName}', Other='{other.name}', Layer='{LayerMask.LayerToName(other.gameObject.layer)}'.",
+                $"[VOID ZONE] Trigger detectado. Source='{sourceName}', " +
+                $"Other='{other.name}', Layer='{LayerMask.LayerToName(other.gameObject.layer)}'.",
                 this);
         }
 
@@ -98,21 +99,22 @@ public sealed class VoidZone : MonoBehaviour
             if (enableDebugLogs)
             {
                 Debug.Log(
-                    $"[VOID ZONE] Ignored collider '{other.name}' because its layer is not inside PlayerLayers.",
+                    $"[VOID ZONE] Ignorado '{other.name}' — capa no incluida en PlayerLayers.",
                     this);
             }
 
             return;
         }
 
-        BallStateController state = other.GetComponentInParent<BallStateController>();
+        BallStateController stateController = other.GetComponentInParent<BallStateController>();
 
-        if (state == null)
+        if (stateController == null)
         {
             if (enableDebugLogs)
             {
                 Debug.LogWarning(
-                    $"[VOID ZONE] Collider '{other.name}' is in a valid layer but no BallStateController was found in parents.",
+                    $"[VOID ZONE] '{other.name}' está en capa válida pero no tiene " +
+                    $"BallStateController en su jerarquía padre.",
                     this);
             }
 
@@ -122,42 +124,83 @@ public sealed class VoidZone : MonoBehaviour
         if (enableDebugLogs)
         {
             Debug.Log(
-                $"[VOID ZONE] BallStateController found on '{state.name}'. Calling Die().",
+                $"[VOID ZONE] BallStateController encontrado en '{stateController.name}'. " +
+                $"Estado actual: {stateController.CurrentState}. Llamando Die().",
                 this);
         }
 
-        state.Die();
+        stateController.Die();
     }
 
-    private void OnTriggerEnter(Collider other)
-    {
-        ProcessTriggerEnter(other, gameObject.name);
-    }
+    #endregion
+
+    #region Public API — Generation Setup
 
     /// <summary>
-    /// Valida configuración básica del collider local.
+    /// Copia los parámetros de configuración de otro <see cref="VoidZone"/> a este.
+    /// Usado exclusivamente por <see cref="VoidZoneGenerator"/> para propagar la configuración
+    /// del VoidZone origen al objeto generado proceduralmente.
+    /// No llames este método durante el gameplay normal.
     /// </summary>
-    private void ValidateConfiguration()
+    /// <param name="source">VoidZone origen desde donde copiar la configuración.</param>
+    public void CopySettingsFrom(VoidZone source)
     {
-        if (!validateTriggerConfiguration)
+        if (source == null)
         {
             return;
         }
 
-        Collider ownCollider = GetComponent<Collider>();
-        if (ownCollider != null && !ownCollider.isTrigger)
+        playerLayers   = source.playerLayers;
+        enableDebugLogs = source.enableDebugLogs;
+    }
+
+    #endregion
+
+    #region Validation
+
+    private void ValidateConfiguration()
+    {
+        if (validateTriggerConfiguration)
+        {
+            Collider ownCollider = GetComponent<Collider>();
+
+            if (ownCollider != null && !ownCollider.isTrigger)
+            {
+                Debug.LogWarning(
+                    $"[VOID ZONE] El Collider en '{name}' no está configurado como Trigger. " +
+                    $"La zona de muerte no funcionará correctamente.",
+                    this);
+            }
+        }
+
+        if (playerLayers.value == 0)
         {
             Debug.LogWarning(
-                $"[VOID ZONE] Collider on '{name}' is not configured as trigger. It should be trigger for correct behavior.",
+                $"[VOID ZONE] PlayerLayers en '{name}' está vacío (ninguna capa seleccionada). " +
+                $"La zona de muerte ignorará todos los colliders silenciosamente.",
                 this);
         }
     }
 
-    /// <summary>
-    /// Indica si una capa pertenece a un LayerMask dado.
-    /// </summary>
+    private void OnValidate()
+    {
+        if (playerLayers.value == 0)
+        {
+            Debug.LogWarning(
+                $"[VOID ZONE] PlayerLayers en '{name}' está vacío. " +
+                $"Asigna al menos la capa del jugador para que la zona funcione.",
+                this);
+        }
+    }
+
+    #endregion
+
+    #region Helpers
+
     private static bool IsInLayerMask(int layer, LayerMask layerMask)
     {
         return (layerMask.value & (1 << layer)) != 0;
     }
+
+    #endregion
 }

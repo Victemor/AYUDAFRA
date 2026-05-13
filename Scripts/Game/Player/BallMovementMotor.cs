@@ -2,125 +2,83 @@ using UnityEngine;
 
 /// <summary>
 /// Motor de locomoción de la esfera basado en impulsos discretos.
-/// Mantiene la velocidad planar, aplica steering, frenado, fricción y respuestas físicas controladas.
-/// Soporta dos sistemas de input: swipe (impulsos discretos) y joystick (mantenimiento continuo).
 /// </summary>
+[DefaultExecutionOrder(-15)]
 [RequireComponent(typeof(Rigidbody))]
 public sealed class BallMovementMotor : MonoBehaviour
 {
     #region Inspector
 
     [Header("Referencias")]
-
-    [SerializeField]
-    [Tooltip("Rigidbody de la pelota.")]
+    [SerializeField][Tooltip("Rigidbody de la pelota.")]
     private Rigidbody rb;
-
-    [SerializeField]
-    [Tooltip("Controlador de rotación. Provee el forward actual de movimiento.")]
+    [SerializeField][Tooltip("Controlador de rotación. Provee el forward actual de movimiento.")]
     private SphereRotationController rotationController;
-
-    [SerializeField]
-    [Tooltip("Acumulador de impulsos de avance.")]
+    [SerializeField][Tooltip("Acumulador de impulsos de avance.")]
     private ImpulseAccumulator impulseAccumulator;
-
-    [SerializeField]
-    [Tooltip("Acumulador de frenado.")]
+    [SerializeField][Tooltip("Acumulador de frenado.")]
     private BrakeAccumulator brakeAccumulator;
-
-    [SerializeField]
-    [Tooltip("Sensor de suelo.")]
+    [SerializeField][Tooltip("Sensor de suelo.")]
     private BallGroundSensor groundSensor;
-
-    [SerializeField]
-    [Tooltip("Sistema de respuesta a colisiones.")]
+    [SerializeField][Tooltip("Sistema de respuesta a colisiones.")]
     private BallCollisionResponder collisionResponder;
 
     [Header("Velocidad")]
-
-    [SerializeField]
-    [Tooltip("Velocidad máxima en m/s.")]
+    [SerializeField][Tooltip("Velocidad máxima en m/s.")]
     private float maxSpeed = 12f;
-
-    [SerializeField]
-    [Tooltip("Factor de control horizontal en el aire.")]
-    [Range(0f, 1f)]
+    [SerializeField][Tooltip("Factor de control horizontal en el aire.")][Range(0f, 1f)]
     private float airControlFactor = 0.4f;
 
     [Header("Fricción pasiva")]
-
-    [SerializeField]
-    [Tooltip("Desaceleración en m/s² aplicada de forma pasiva cuando no hay input.")]
+    [SerializeField][Tooltip("Desaceleración en m/s² aplicada de forma pasiva cuando no hay input.")]
     private float passiveFriction = 0.8f;
-
-    [SerializeField]
-    [Tooltip("Velocidad mínima por debajo de la cual la pelota se detiene completamente.")]
+    [SerializeField][Tooltip("Velocidad mínima por debajo de la cual la pelota se detiene completamente.")]
     private float stopThreshold = 0.08f;
 
     [Header("Slope Handling")]
-
-    [SerializeField]
-    [Tooltip("Multiplicador de velocidad al subir pendiente.")]
-    [Range(0.1f, 1f)]
+    [SerializeField][Tooltip("Multiplicador de velocidad al subir pendiente.")][Range(0.1f, 1f)]
     private float uphillSpeedFactor = 0.72f;
-
-    [SerializeField]
-    [Tooltip("Multiplicador de velocidad al bajar pendiente.")]
-    [Range(1f, 3f)]
+    [SerializeField][Tooltip("Multiplicador de velocidad al bajar pendiente.")][Range(1f, 3f)]
     private float downhillSpeedFactor = 1.2f;
-
-    [SerializeField]
-    [Tooltip("Fuerza de adhesión al suelo en pendientes.")]
+    [SerializeField][Tooltip("Fuerza de adhesión al suelo en pendientes.")]
     private float groundStickForce = 28f;
-
-    [SerializeField]
-    [Tooltip("Velocidad vertical máxima positiva estando en el suelo.")]
+    [SerializeField][Tooltip("Velocidad vertical máxima positiva estando en el suelo.")]
     private float maxGroundedUpwardVelocity = 2.5f;
-
-    [SerializeField]
-    [Tooltip("Velocidad vertical mínima al bajar en el suelo.")]
+    [SerializeField][Tooltip("Velocidad vertical mínima al bajar en el suelo.")]
     private float minimumGroundedDownwardVelocity = -12f;
 
     [Header("Impacto")]
-
-    [SerializeField]
-    [Tooltip("Duración del estado de retroceso por colisión con obstáculos normales.")]
+    [SerializeField][Tooltip("Duración del estado de retroceso por colisión con obstáculos normales.")]
     private float postImpactRecoveryDuration = 0.1f;
-
-    [SerializeField]
-    [Tooltip("Velocidad de disipación del retroceso.")]
+    [SerializeField][Tooltip("Velocidad de disipación del retroceso.")]
     private float impactVelocityDecay = 16f;
 
     [Header("Barreras")]
-
     [SerializeField]
-    [Tooltip("Tiempo durante el cual se ignoran nuevos rebotes de barrera para evitar doble contacto.")]
-    private float barrierBounceCooldownDuration = 0.08f;
+    [Tooltip("Tiempo en segundos durante el cual se bloquea todo el steering y se ignoran nuevos rebotes " +
+             "tras un choque. Permite vuelo libre post-rebote sin que el steering interfiera. " +
+             "MÍNIMO RECOMENDADO: 0.08. Cero rompe el sistema.")]
+    private float barrierBounceCooldownDuration = 0.1f;
 
-    [SerializeField]
-    [Tooltip("Tiempo durante el cual se bloquea el steering después de rebotar contra una barrera.")]
-    private float barrierSteeringLockDuration = 0.06f;
-
-    [SerializeField]
-    [Tooltip("Velocidad mínima conservada al rebotar contra una barrera.")]
+    [SerializeField][Tooltip("Velocidad mínima conservada al rebotar contra una barrera.")]
     private float minimumBarrierBounceSpeed = 0.25f;
 
-    [SerializeField]
-    [Tooltip("Velocidad máxima de separación de barrera suprimida durante deslizamiento sostenido.")]
-    private float barrierSeparationDampSpeed = 2f;
-
     [Header("Deslizamiento lateral")]
-
-    [SerializeField]
-    [Tooltip("Factor de deslizamiento lateral al estar bloqueado por una pared.")]
-    [Range(0f, 1f)]
+    [SerializeField][Tooltip("Factor de deslizamiento lateral al estar bloqueado por una pared.")][Range(0f, 1f)]
     private float blockedSlideFactor = 0.9f;
 
     [Header("Steering")]
-
-    [SerializeField]
-    [Tooltip("Velocidad en grados/s a la que la velocidad planar sigue al forward actual.")]
+    [SerializeField][Tooltip("Velocidad máxima en grados/s a la que la velocidad planar sigue al forward actual.")]
     private float steeringDegreesPerSecond = 240f;
+    [SerializeField]
+    [Tooltip("Ángulo de diferencia (grados) a partir del cual se aplica el 100% de steeringDegreesPerSecond. " +
+             "15 grados = curva suave sin ser restrictiva para giros intencionales.")]
+    [Range(5f, 90f)]
+    private float steeringAngleForFullRate = 15f;
+    [SerializeField]
+    [Tooltip("Exponente de la curva de respuesta del steering. 1=lineal, 1.5=suave (recomendado), 2=cuadrático.")]
+    [Range(1f, 3f)]
+    private float steeringResponseExponent = 1.5f;
 
     #endregion
 
@@ -128,23 +86,20 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private float pendingImpulse;
     private float pendingBrake;
-    private bool hasNewImpulse;
-    private bool hasNewBrake;
+    private bool  hasNewImpulse;
+    private bool  hasNewBrake;
 
-    private float impactRecoveryTimer;
+    private float   impactRecoveryTimer;
     private Vector3 impactVelocity;
 
-    private bool isForceStopping;
+    private bool  isForceStopping;
     private float forcedStopDeceleration;
 
-    private float speedBoostMultiplier = 1f;
+    private float speedBoostMultiplier    = 1f;
     private float jumpBypassTimer;
-
     private float barrierBounceCooldownTimer;
-    private float barrierSteeringLockTimer;
 
-    // Joystick
-    private bool maintainCurrentSpeed;
+    private bool  maintainCurrentSpeed;
     private float joystickBrakeDeceleration;
     private float maintainedSpeedTarget;
 
@@ -152,27 +107,14 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     #region Properties
 
-    /// <summary>Velocidad planar actual de la pelota.</summary>
-    public float CurrentSpeed => GetPlanarVelocity(rb.linearVelocity).magnitude;
-
-    /// <summary>Velocidad planar actual. Alias de compatibilidad.</summary>
-    public float CurrentPlanarVelocity => CurrentSpeed;
-
-    /// <summary>Velocidad completa del Rigidbody.</summary>
-    public Vector3 CurrentVelocity => rb.linearVelocity;
-
-    /// <summary>Velocidad máxima configurada.</summary>
-    public float MaxSpeed => maxSpeed;
-
-    /// <summary>Indica si el motor está procesando un impacto de obstáculo normal.</summary>
-    public bool IsRecoveringFromImpact => impactRecoveryTimer > 0f;
-
-    /// <summary>Última dirección válida de movimiento.</summary>
+    public float   CurrentSpeed          => GetPlanarVelocity(rb.linearVelocity).magnitude;
+    public float   CurrentPlanarVelocity => CurrentSpeed;
+    public Vector3 CurrentVelocity       => rb.linearVelocity;
+    public float   MaxSpeed              => maxSpeed;
+    public bool    IsRecoveringFromImpact => impactRecoveryTimer > 0f;
     public Vector3 LastValidMoveDirection =>
         rotationController != null ? rotationController.CurrentForward : Vector3.forward;
-
-    /// <summary>Indica si puede procesar otro rebote contra barrera.</summary>
-    public bool CanProcessBarrierBounce => barrierBounceCooldownTimer <= 0f;
+    public bool CanProcessBarrierBounce  => barrierBounceCooldownTimer <= 0f;
 
     #endregion
 
@@ -206,28 +148,20 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void OnEnable()
     {
-        if (impulseAccumulator != null)
-            impulseAccumulator.OnImpulseReady += HandleImpulseReady;
-
-        if (brakeAccumulator != null)
-            brakeAccumulator.OnBrakeReady += HandleBrakeReady;
+        if (impulseAccumulator != null) impulseAccumulator.OnImpulseReady += HandleImpulseReady;
+        if (brakeAccumulator   != null) brakeAccumulator.OnBrakeReady    += HandleBrakeReady;
     }
 
     private void OnDisable()
     {
-        if (impulseAccumulator != null)
-            impulseAccumulator.OnImpulseReady -= HandleImpulseReady;
-
-        if (brakeAccumulator != null)
-            brakeAccumulator.OnBrakeReady -= HandleBrakeReady;
+        if (impulseAccumulator != null) impulseAccumulator.OnImpulseReady -= HandleImpulseReady;
+        if (brakeAccumulator   != null) brakeAccumulator.OnBrakeReady    -= HandleBrakeReady;
     }
 
     private void FixedUpdate()
     {
         TickTimers();
-
         groundSensor?.RefreshGroundState();
-
         UpdateImpactRecovery();
         NotifyAccumulators();
 
@@ -254,8 +188,15 @@ public sealed class BallMovementMotor : MonoBehaviour
         ApplyPassiveFriction();
         ApplyGroundAdhesion();
         ClampGroundedVerticalVelocity();
-        SuppressBarrierSeparationDrift();
         EnforceSpeedMaintenance();
+    }
+
+    private void OnValidate()
+    {
+        // Garantiza que el cooldown nunca sea 0 accidentalmente en el Inspector.
+        // Con 0, el steering se reactiva en el mismo frame del rebote y vuelve a
+        // empujar la bola contra la barrera.
+        barrierBounceCooldownDuration = Mathf.Max(0.08f, barrierBounceCooldownDuration);
     }
 
     #endregion
@@ -280,7 +221,6 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     #region Public API — Control
 
-    /// <summary>Detiene completamente la pelota y limpia todo el estado.</summary>
     public void Stop()
     {
         maintainedSpeedTarget      = 0f;
@@ -293,7 +233,6 @@ public sealed class BallMovementMotor : MonoBehaviour
         isForceStopping            = false;
         forcedStopDeceleration     = 0f;
         barrierBounceCooldownTimer = 0f;
-        barrierSteeringLockTimer   = 0f;
         maintainCurrentSpeed       = false;
         joystickBrakeDeceleration  = 0f;
 
@@ -304,35 +243,28 @@ public sealed class BallMovementMotor : MonoBehaviour
         brakeAccumulator?.ResetConsecutive();
     }
 
-    /// <summary>Teleporta la pelota y resetea el estado de movimiento.</summary>
     public void TeleportTo(Vector3 position, Quaternion rotation)
     {
         Stop();
-
         rb.position = position;
         rb.rotation = rotation.normalized;
-
         rotationController?.SnapToRotation(rotation);
         groundSensor?.RefreshGroundStateImmediate();
-
         Physics.SyncTransforms();
     }
 
-    /// <summary>Escala la velocidad planar actual por un factor.</summary>
     public void MultiplySpeed(float multiplier)
     {
         float clamped     = Mathf.Clamp01(multiplier);
-        Vector3 velocity  = rb.linearVelocity;
-        velocity.x       *= clamped;
-        velocity.z       *= clamped;
-        rb.linearVelocity = velocity;
+        Vector3 v         = rb.linearVelocity;
+        v.x              *= clamped;
+        v.z              *= clamped;
+        rb.linearVelocity = v;
     }
 
-    /// <summary>Aplica retroceso temporal por colisión con obstáculo normal.</summary>
     public void ApplyImpactRecoil(Vector3 recoilVelocity)
     {
         recoilVelocity.y = 0f;
-
         if (recoilVelocity.magnitude > maxSpeed)
             recoilVelocity = recoilVelocity.normalized * maxSpeed;
 
@@ -343,52 +275,43 @@ public sealed class BallMovementMotor : MonoBehaviour
         hasNewImpulse       = false;
         hasNewBrake         = false;
 
-        Vector3 current   = rb.linearVelocity;
-        rb.linearVelocity = new Vector3(recoilVelocity.x, current.y, recoilVelocity.z);
+        Vector3 c         = rb.linearVelocity;
+        rb.linearVelocity = new Vector3(recoilVelocity.x, c.y, recoilVelocity.z);
     }
 
-    /// <summary>Aplica rebote contra barrera conservando la velocidad planar.</summary>
-    public void ApplyBarrierBounce(Vector3 bounceDirection, float preservedPlanarSpeed)
+    public void ApplyBarrierBounce(Vector3 bounceDirection, float bounceSpeed)
     {
-        if (!CanProcessBarrierBounce)
-            return;
+        if (!CanProcessBarrierBounce) return;
 
         bounceDirection.y = 0f;
-
-        if (bounceDirection.sqrMagnitude < 0.0001f)
-            return;
-
+        if (bounceDirection.sqrMagnitude < 0.0001f) return;
         bounceDirection.Normalize();
 
-        float resolvedSpeed = Mathf.Max(minimumBarrierBounceSpeed, preservedPlanarSpeed);
-        Vector3 current     = rb.linearVelocity;
-        Vector3 newPlanar   = bounceDirection * resolvedSpeed;
-
-        rb.linearVelocity  = new Vector3(newPlanar.x, current.y, newPlanar.z);
+        float speed       = Mathf.Max(minimumBarrierBounceSpeed, bounceSpeed);
+        Vector3 c         = rb.linearVelocity;
+        rb.linearVelocity = new Vector3(bounceDirection.x * speed, c.y, bounceDirection.z * speed);
         rb.angularVelocity = Vector3.zero;
 
-        barrierBounceCooldownTimer = barrierBounceCooldownDuration;
-        barrierSteeringLockTimer   = barrierSteeringLockDuration;
+        // Resetear el target de velocidad mantenida al valor post-rebote.
+        // Sin esto, EnforceSpeedMaintenance restaura la velocidad pre-impacto y
+        // la bola vuelve a empujar contra la barrera a alta velocidad.
+        maintainedSpeedTarget = speed;
 
-        pendingImpulse = 0f;
-        pendingBrake   = 0f;
-        hasNewImpulse  = false;
-        hasNewBrake    = false;
+        barrierBounceCooldownTimer = Mathf.Max(0.08f, barrierBounceCooldownDuration);
+        pendingImpulse             = 0f;
+        pendingBrake               = 0f;
+        hasNewImpulse              = false;
+        hasNewBrake                = false;
     }
 
-    /// <summary>Compatibilidad con llamadas anteriores de deflexión.</summary>
     public void ApplyBarrierDeflect(Vector3 deflectedVelocity)
     {
-        Vector3 direction = deflectedVelocity;
-        direction.y = 0f;
-
-        if (direction.sqrMagnitude < 0.0001f)
-            return;
-
-        ApplyBarrierBounce(direction.normalized, direction.magnitude);
+        Vector3 d = deflectedVelocity;
+        d.y = 0f;
+        if (d.sqrMagnitude < 0.0001f) return;
+        ApplyBarrierBounce(d.normalized, d.magnitude);
     }
 
-    /// <summary>Suspende la tracción durante un tiempo sin retroceso.</summary>
     public void SuppressDrive(float duration)
     {
         impactRecoveryTimer = Mathf.Max(impactRecoveryTimer, duration);
@@ -398,7 +321,6 @@ public sealed class BallMovementMotor : MonoBehaviour
         hasNewBrake         = false;
     }
 
-    /// <summary>Activa el freno forzado.</summary>
     public void BeginForcedStop(float deceleration)
     {
         isForceStopping        = true;
@@ -409,7 +331,6 @@ public sealed class BallMovementMotor : MonoBehaviour
         pendingBrake           = 0f;
     }
 
-    /// <summary>Desactiva el freno forzado.</summary>
     public void EndForcedStop()
     {
         isForceStopping        = false;
@@ -420,112 +341,60 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     #region Public API — Joystick
 
-    /// <summary>
-    /// Activa o desactiva el mantenimiento de velocidad por joystick.
-    /// Cuando está activo, la fricción pasiva no se aplica.
-    /// </summary>
     public void SetSpeedMaintenance(bool active)
     {
-        if (active && !maintainCurrentSpeed)
-        {
-            // Al activar: capturar la velocidad actual como línea base
-            maintainedSpeedTarget = CurrentSpeed;
-        }
-        else if (!active)
-        {
-            maintainedSpeedTarget = 0f;
-        }
-
+        if (active && !maintainCurrentSpeed) maintainedSpeedTarget = CurrentSpeed;
+        else if (!active)                    maintainedSpeedTarget = 0f;
         maintainCurrentSpeed = active;
     }
 
-    /// <summary>
-    /// Configura la desaceleración continua del freno por joystick.
-    /// 0 = sin freno. Llamar con 0 para liberar el freno.
-    /// </summary>
     public void SetJoystickBrake(float deceleration)
     {
         joystickBrakeDeceleration = Mathf.Max(0f, deceleration);
     }
 
-    /// <summary>
-    /// Aplica un impulso de arranque desde el joystick.
-    /// Usado cuando la pelota está detenida y el joystick se empuja hacia adelante.
-    /// </summary>
     public void ApplyJoystickKickstart(float impulse)
     {
-        if (impulse <= 0f)
-            return;
-
-        Vector3 forward         = GetMovementForward();
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        Vector3 newPlanar       = planarVelocity + forward * impulse;
-
-        float effectiveMax = maxSpeed * speedBoostMultiplier;
-
-        if (newPlanar.magnitude > effectiveMax)
-            newPlanar = newPlanar.normalized * effectiveMax;
-
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
+        if (impulse <= 0f) return;
+        Vector3 fwd   = GetMovementForward();
+        Vector3 v     = rb.linearVelocity;
+        Vector3 p     = GetPlanarVelocity(v) + fwd * impulse;
+        float max     = maxSpeed * speedBoostMultiplier;
+        if (p.magnitude > max) p = p.normalized * max;
+        rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
 
     #endregion
 
     #region Public API — Power-Ups
 
-    /// <summary>Aplica impulso vertical instantáneo.</summary>
     public void ApplyJump(float jumpForce)
     {
-        Vector3 velocity  = rb.linearVelocity;
-        velocity.y        = Mathf.Max(velocity.y, jumpForce);
-        rb.linearVelocity = velocity;
+        Vector3 v     = rb.linearVelocity;
+        v.y           = Mathf.Max(v.y, jumpForce);
+        rb.linearVelocity = v;
         jumpBypassTimer   = 0.4f;
     }
 
-    /// <summary>Activa el multiplicador de velocidad máxima.</summary>
-    public void SetSpeedBoostMultiplier(float multiplier)
-    {
-        speedBoostMultiplier = Mathf.Max(1f, multiplier);
-    }
-
-    /// <summary>Elimina el multiplicador de velocidad.</summary>
-    public void ClearSpeedBoost()
-    {
-        speedBoostMultiplier = 1f;
-    }
+    public void SetSpeedBoostMultiplier(float multiplier) => speedBoostMultiplier = Mathf.Max(1f, multiplier);
+    public void ClearSpeedBoost()                          => speedBoostMultiplier = 1f;
 
     #endregion
 
     #region Internal Physics
 
-    /// <summary>
-    /// Cuando el joystick mantiene velocidad, restaura la velocidad planar si la física
-    /// (fricción de material, contacto con suelo) la redujo por debajo del objetivo.
-    /// El objetivo solo sube (swipe puede dar más velocidad), nunca baja mientras
-    /// el dedo está presionado.
-    /// </summary>
     private void EnforceSpeedMaintenance()
     {
-        if (!maintainCurrentSpeed)
-            return;
+        if (!maintainCurrentSpeed) return;
+        Vector3 v    = rb.linearVelocity;
+        Vector3 p    = GetPlanarVelocity(v);
+        float speed  = p.magnitude;
 
-        Vector3 velocity      = rb.linearVelocity;
-        Vector3 planar        = GetPlanarVelocity(velocity);
-        float   currentSpeed  = planar.magnitude;
-
-        // Si la velocidad subió (por swipe u otro impulso), actualizar el objetivo hacia arriba
-        if (currentSpeed > maintainedSpeedTarget)
+        if (speed > maintainedSpeedTarget) { maintainedSpeedTarget = speed; return; }
+        if (maintainedSpeedTarget > stopThreshold && p.sqrMagnitude > 0.0001f)
         {
-            maintainedSpeedTarget = currentSpeed;
-            return;
-        }
-
-        // Si la física redujo la velocidad por debajo del objetivo, restaurarla
-        if (maintainedSpeedTarget > stopThreshold && planar.sqrMagnitude > 0.0001f)
-        {
-            planar            = planar.normalized * maintainedSpeedTarget;
-            rb.linearVelocity = new Vector3(planar.x, velocity.y, planar.z);
+            p                 = p.normalized * maintainedSpeedTarget;
+            rb.linearVelocity = new Vector3(p.x, v.y, p.z);
         }
     }
 
@@ -533,166 +402,117 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (jumpBypassTimer > 0f)
             jumpBypassTimer = Mathf.Max(0f, jumpBypassTimer - Time.fixedDeltaTime);
-
         if (barrierBounceCooldownTimer > 0f)
             barrierBounceCooldownTimer = Mathf.Max(0f, barrierBounceCooldownTimer - Time.fixedDeltaTime);
-
-        if (barrierSteeringLockTimer > 0f)
-            barrierSteeringLockTimer = Mathf.Max(0f, barrierSteeringLockTimer - Time.fixedDeltaTime);
     }
 
     private void NotifyAccumulators()
     {
-        float currentSpeed = CurrentSpeed;
-        float currentMax   = maxSpeed * speedBoostMultiplier;
-
-        impulseAccumulator?.NotifyCurrentSpeed(currentSpeed, currentMax);
-        brakeAccumulator?.NotifyCurrentSpeed(currentSpeed);
+        float s = CurrentSpeed;
+        float m = maxSpeed * speedBoostMultiplier;
+        impulseAccumulator?.NotifyCurrentSpeed(s, m);
+        brakeAccumulator?.NotifyCurrentSpeed(s);
     }
 
     private void UpdateImpactRecovery()
     {
-        if (impactRecoveryTimer <= 0f)
-        {
-            impactVelocity = Vector3.zero;
-            return;
-        }
-
+        if (impactRecoveryTimer <= 0f) { impactVelocity = Vector3.zero; return; }
         impactRecoveryTimer = Mathf.Max(0f, impactRecoveryTimer - Time.fixedDeltaTime);
-
-        if (impactVelocity.sqrMagnitude <= 0.0001f)
-        {
-            impactVelocity = Vector3.zero;
-            return;
-        }
-
-        float nextMagnitude = Mathf.MoveTowards(
-            impactVelocity.magnitude, 0f,
-            impactVelocityDecay * Time.fixedDeltaTime);
-
-        impactVelocity = impactVelocity.normalized * nextMagnitude;
+        if (impactVelocity.sqrMagnitude <= 0.0001f) { impactVelocity = Vector3.zero; return; }
+        float n = Mathf.MoveTowards(impactVelocity.magnitude, 0f, impactVelocityDecay * Time.fixedDeltaTime);
+        impactVelocity = impactVelocity.normalized * n;
     }
 
     private void ApplyImpactVelocity()
     {
-        Vector3 current   = rb.linearVelocity;
-        rb.linearVelocity = new Vector3(impactVelocity.x, current.y, impactVelocity.z);
+        Vector3 c = rb.linearVelocity;
+        rb.linearVelocity = new Vector3(impactVelocity.x, c.y, impactVelocity.z);
     }
 
     private void ApplyPendingImpulse()
     {
-        if (!hasNewImpulse || pendingImpulse <= 0f)
-            return;
-
+        if (!hasNewImpulse || pendingImpulse <= 0f) return;
         hasNewImpulse = false;
 
-        Vector3 forward         = GetMovementForward();
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        Vector3 newPlanar       = planarVelocity + forward * pendingImpulse;
+        Vector3 fwd = GetMovementForward();
 
-        float effectiveMax = maxSpeed * speedBoostMultiplier;
-        float slopeMax     = ResolveSlopeAdjustedMax(forward, effectiveMax);
+        // Cuando hay bloqueo de barrera, proyectar el forward sobre el plano de la barrera
+        // antes de aplicar el impulso. Sin esto, el swipe añade velocidad INTO la barrera,
+        // ResolveBlockedVelocity la cancela y la bola no se mueve.
+        // Con la proyección, el swipe acelera paralelo a la barrera permitiendo el escape.
+        if (collisionResponder != null && collisionResponder.HasBlockingContact)
+        {
+            Vector3 blockNormal = collisionResponder.BlockingNormal;
+            blockNormal.y = 0f;
+            if (blockNormal.sqrMagnitude > 0.0001f)
+            {
+                blockNormal.Normalize();
+                Vector3 projectedFwd = Vector3.ProjectOnPlane(fwd, blockNormal);
+                projectedFwd.y = 0f;
+                if (projectedFwd.sqrMagnitude > 0.01f)
+                    fwd = projectedFwd.normalized;
+            }
+        }
+        Vector3 v    = rb.linearVelocity;
+        Vector3 p    = GetPlanarVelocity(v) + fwd * pendingImpulse;
+        float eMax   = maxSpeed * speedBoostMultiplier;
+        float sMax   = ResolveSlopeAdjustedMax(fwd, eMax);
 
-        if (newPlanar.magnitude > slopeMax)
-            newPlanar = newPlanar.normalized * slopeMax;
-
-        newPlanar = ResolveBlockedVelocity(newPlanar);
-
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
+        if (p.magnitude > sMax) p = p.normalized * sMax;
+        p                 = ResolveBlockedVelocity(p);
+        rb.linearVelocity = new Vector3(p.x, v.y, p.z);
         pendingImpulse    = 0f;
     }
 
     private void ApplyPendingBrake()
     {
-        if (!hasNewBrake || pendingBrake <= 0f)
-            return;
-
+        if (!hasNewBrake || pendingBrake <= 0f) return;
         hasNewBrake = false;
 
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        float currentSpeed      = planarVelocity.magnitude;
+        Vector3 v   = rb.linearVelocity;
+        Vector3 p   = GetPlanarVelocity(v);
+        float speed = p.magnitude;
+        if (speed <= stopThreshold) { pendingBrake = 0f; return; }
 
-        if (currentSpeed <= stopThreshold)
-        {
-            pendingBrake = 0f;
-            return;
-        }
-
-        float newSpeed    = Mathf.Max(stopThreshold, currentSpeed - pendingBrake);
-        Vector3 newPlanar = planarVelocity.normalized * newSpeed;
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
-        pendingBrake      = 0f;
+        float ns = Mathf.Max(stopThreshold, speed - pendingBrake);
+        rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
+        pendingBrake = 0f;
     }
 
-    /// <summary>
-    /// Aplica el freno continuo del joystick, proporcional al eje Y negativo.
-    /// Frena hasta llegar a 0 si se mantiene.
-    /// </summary>
     private void ApplyJoystickBrakeForce()
     {
-        if (joystickBrakeDeceleration <= 0f)
-            return;
-
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        float currentSpeed      = planarVelocity.magnitude;
-
-        if (currentSpeed <= stopThreshold)
-        {
-            rb.linearVelocity = new Vector3(0f, currentVelocity.y, 0f);
-            return;
-        }
-
-        float newSpeed    = Mathf.MoveTowards(currentSpeed, 0f, joystickBrakeDeceleration * Time.fixedDeltaTime);
-        Vector3 newPlanar = planarVelocity.normalized * newSpeed;
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
+        if (joystickBrakeDeceleration <= 0f) return;
+        Vector3 v   = rb.linearVelocity;
+        Vector3 p   = GetPlanarVelocity(v);
+        float speed = p.magnitude;
+        if (speed <= stopThreshold) { rb.linearVelocity = new Vector3(0f, v.y, 0f); return; }
+        float ns = Mathf.MoveTowards(speed, 0f, joystickBrakeDeceleration * Time.fixedDeltaTime);
+        rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
     }
 
-    /// <summary>
-    /// Aplica fricción pasiva cuando no hay input activo.
-    /// Se omite cuando el joystick mantiene la velocidad.
-    /// </summary>
     private void ApplyPassiveFriction()
     {
-        // El joystick puede mantener la velocidad actual: en ese caso
-        // no aplicar fricción pasiva para que la pelota no desacelere.
-        if (maintainCurrentSpeed)
-            return;
-
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        float currentSpeed      = planarVelocity.magnitude;
-
-        if (currentSpeed <= stopThreshold)
-        {
-            rb.linearVelocity = new Vector3(0f, currentVelocity.y, 0f);
-            return;
-        }
-
-        float newSpeed    = Mathf.MoveTowards(currentSpeed, 0f, passiveFriction * Time.fixedDeltaTime);
-        Vector3 newPlanar = planarVelocity.normalized * newSpeed;
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
+        if (maintainCurrentSpeed) return;
+        Vector3 v   = rb.linearVelocity;
+        Vector3 p   = GetPlanarVelocity(v);
+        float speed = p.magnitude;
+        if (speed <= stopThreshold) { rb.linearVelocity = new Vector3(0f, v.y, 0f); return; }
+        float ns = Mathf.MoveTowards(speed, 0f, passiveFriction * Time.fixedDeltaTime);
+        rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
     }
 
     private void ApplyForcedStop()
     {
-        Vector3 velocity       = rb.linearVelocity;
-        Vector3 planarVelocity = GetPlanarVelocity(velocity);
-
-        Vector3 nextPlanar = Vector3.MoveTowards(
-            planarVelocity, Vector3.zero,
-            forcedStopDeceleration * Time.fixedDeltaTime);
-
-        rb.linearVelocity = new Vector3(nextPlanar.x, velocity.y, nextPlanar.z);
+        Vector3 v  = rb.linearVelocity;
+        Vector3 p  = GetPlanarVelocity(v);
+        Vector3 np = Vector3.MoveTowards(p, Vector3.zero, forcedStopDeceleration * Time.fixedDeltaTime);
+        rb.linearVelocity = new Vector3(np.x, v.y, np.z);
     }
 
     private void ApplyGroundAdhesion()
     {
         if (groundSensor == null || !groundSensor.IsGrounded) return;
         if (IsRecoveringFromImpact || isForceStopping) return;
-
         rb.AddForce(-groundSensor.GroundNormal * groundStickForce, ForceMode.Acceleration);
     }
 
@@ -701,88 +521,56 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (jumpBypassTimer > 0f) return;
         if (groundSensor == null || !groundSensor.IsGrounded) return;
         if (IsRecoveringFromImpact) return;
-
-        Vector3 velocity = rb.linearVelocity;
-        velocity.y = Mathf.Clamp(
-            velocity.y,
-            minimumGroundedDownwardVelocity,
-            maxGroundedUpwardVelocity);
-
-        rb.linearVelocity = velocity;
-    }
-
-    private void ApplySteering()
-    {
-        if (barrierSteeringLockTimer > 0f)
-            return;
-
-        // Durante contacto sostenido con barrera, no aplicar steering.
-        // Evita el loop de oscilación entre steering y física de separación.
-        if (barrierBounceCooldownTimer <= 0f
-            && collisionResponder != null
-            && collisionResponder.HasAnyContact)
-            return;
-
-        Vector3 currentVelocity = rb.linearVelocity;
-        Vector3 planarVelocity  = GetPlanarVelocity(currentVelocity);
-        float   speed           = planarVelocity.magnitude;
-
-        if (speed <= stopThreshold)
-            return;
-
-        Vector3 targetForward = rotationController != null
-            ? rotationController.CurrentForward
-            : Vector3.forward;
-
-        targetForward.y = 0f;
-
-        if (targetForward.sqrMagnitude < 0.0001f)
-            return;
-
-        targetForward.Normalize();
-
-        Vector3 currentDirection = planarVelocity / speed;
-
-        Vector3 steeredDirection = Vector3.RotateTowards(
-            currentDirection,
-            targetForward,
-            steeringDegreesPerSecond * Mathf.Deg2Rad * Time.fixedDeltaTime,
-            0f);
-
-        Vector3 newPlanar = steeredDirection * speed;
-        rb.linearVelocity = new Vector3(newPlanar.x, currentVelocity.y, newPlanar.z);
+        Vector3 v = rb.linearVelocity;
+        v.y = Mathf.Clamp(v.y, minimumGroundedDownwardVelocity, maxGroundedUpwardVelocity);
+        rb.linearVelocity = v;
     }
 
     /// <summary>
-    /// Suprime micro-velocidades de separación de barrera durante deslizamiento sostenido.
-    /// Evita el wobble de cámara causado por CapsuleColliders superpuestos.
+    /// Rota la velocidad planar hacia el forward objetivo del jugador.
+    ///
+    /// Diseño deliberadamente simple: NO hay lógica especial de contacto con barrera.
+    /// Con MeshCollider, el motor de física maneja el deslizamiento naturalmente —
+    /// la componente INTO la barrera se cancela por la resolución de contacto de Unity,
+    /// y la componente paralela produce el deslizamiento limpio.
+    /// Cualquier intento de "proyectar" el forward manualmente generaba atrapamiento.
+    ///
+    /// El único bloqueo permitido es durante barrierBounceCooldownTimer para dar
+    /// vuelo libre post-rebote sin que el steering re-dirija hacia la barrera.
     /// </summary>
-    private void SuppressBarrierSeparationDrift()
+    private void ApplySteering()
     {
         if (barrierBounceCooldownTimer > 0f)
             return;
 
-        if (collisionResponder == null || !collisionResponder.HasAnyContact)
-            return;
+        Vector3 v    = rb.linearVelocity;
+        Vector3 p    = GetPlanarVelocity(v);
+        float speed  = p.magnitude;
 
-        Vector3 contactNormal = collisionResponder.AnyContactNormal;
-        contactNormal.y = 0f;
+        if (speed <= stopThreshold) return;
 
-        if (contactNormal.sqrMagnitude < 0.0001f)
-            return;
+        Vector3 targetFwd = rotationController != null
+            ? rotationController.CurrentForward
+            : Vector3.forward;
 
-        contactNormal.Normalize();
+        targetFwd.y = 0f;
+        if (targetFwd.sqrMagnitude < 0.0001f) return;
+        targetFwd.Normalize();
 
-        Vector3 velocity = rb.linearVelocity;
-        Vector3 planar   = GetPlanarVelocity(velocity);
+        Vector3 currentDir    = p / speed;
+        float angleDelta      = Vector3.Angle(currentDir, targetFwd);
+        float normalizedAngle = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
+        float effectiveRate   = steeringDegreesPerSecond * Mathf.Pow(normalizedAngle, steeringResponseExponent);
 
-        float awayComponent = Vector3.Dot(planar, contactNormal);
+        Vector3 steered    = Vector3.RotateTowards(currentDir, targetFwd,
+            effectiveRate * Mathf.Deg2Rad * Time.fixedDeltaTime, 0f);
 
-        if (awayComponent > 0f && awayComponent <= barrierSeparationDampSpeed)
-        {
-            planar           -= contactNormal * awayComponent;
-            rb.linearVelocity = new Vector3(planar.x, velocity.y, planar.z);
-        }
+        // Eliminar la componente INTO la barrera del resultado del steering.
+        // ResolveBlockedVelocity ya existe y funciona con impulsos — la aplicamos
+        // aquí también para que el steering nunca empuje la bola dentro de la barrera.
+        // Cuando HasBlockingContact = false (sin contacto), devuelve el vector sin cambios.
+        Vector3 steeredVelocity = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
+        rb.linearVelocity = steeredVelocity;
     }
 
     #endregion
@@ -791,78 +579,44 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private Vector3 GetMovementForward()
     {
-        Vector3 forward = rotationController != null
-            ? rotationController.CurrentForward
-            : transform.forward;
-
+        Vector3 fwd = rotationController != null ? rotationController.CurrentForward : transform.forward;
         if (groundSensor != null && groundSensor.IsGrounded)
         {
-            Vector3 slopedForward = groundSensor.GetProjectedForward(forward);
-
-            if (slopedForward.sqrMagnitude > 0.0001f)
-                return slopedForward.normalized;
+            Vector3 s = groundSensor.GetProjectedForward(fwd);
+            if (s.sqrMagnitude > 0.0001f) return s.normalized;
         }
-
-        forward.y = 0f;
-
-        return forward.sqrMagnitude < 0.0001f
-            ? Vector3.forward
-            : forward.normalized;
+        fwd.y = 0f;
+        return fwd.sqrMagnitude < 0.0001f ? Vector3.forward : fwd.normalized;
     }
 
-    private float ResolveSlopeAdjustedMax(Vector3 movementDirection, float effectiveMax)
+    private float ResolveSlopeAdjustedMax(Vector3 dir, float max)
     {
-        float verticalComponent = movementDirection.y;
-
-        if (verticalComponent > 0f)
-        {
-            return effectiveMax * Mathf.Lerp(
-                1f, uphillSpeedFactor,
-                Mathf.Clamp01(verticalComponent));
-        }
-
-        if (verticalComponent < 0f)
-        {
-            float downhill = effectiveMax * Mathf.Lerp(
-                1f, downhillSpeedFactor,
-                Mathf.Clamp01(-verticalComponent));
-            return Mathf.Min(downhill, effectiveMax * downhillSpeedFactor);
-        }
-
-        return effectiveMax;
+        float v = dir.y;
+        if (v > 0f) return max * Mathf.Lerp(1f, uphillSpeedFactor,   Mathf.Clamp01(v));
+        if (v < 0f) return Mathf.Min(max * Mathf.Lerp(1f, downhillSpeedFactor, Mathf.Clamp01(-v)),
+                                     max * downhillSpeedFactor);
+        return max;
     }
 
-    private Vector3 ResolveBlockedVelocity(Vector3 desiredVelocity)
+    private Vector3 ResolveBlockedVelocity(Vector3 desired)
     {
-        if (collisionResponder == null || !collisionResponder.HasBlockingContact)
-            return desiredVelocity;
+        if (collisionResponder == null || !collisionResponder.HasBlockingContact) return desired;
+        Vector3 n = collisionResponder.BlockingNormal;
+        n.y = 0f;
+        if (n.sqrMagnitude < 0.0001f) return desired;
+        n.Normalize();
 
-        Vector3 normal = collisionResponder.BlockingNormal;
-        normal.y = 0f;
+        Vector3 dp   = GetPlanarVelocity(desired);
+        float into   = Vector3.Dot(dp, -n);
+        if (into <= 0f) return desired;
 
-        if (normal.sqrMagnitude < 0.0001f)
-            return desiredVelocity;
-
-        normal.Normalize();
-
-        Vector3 desiredPlanar = GetPlanarVelocity(desiredVelocity);
-        float intoWall        = Vector3.Dot(desiredPlanar, -normal);
-
-        if (intoWall <= 0f)
-            return desiredVelocity;
-
-        Vector3 sliding = (desiredPlanar - (-normal * intoWall)) * blockedSlideFactor;
-
-        return sliding.sqrMagnitude < 0.0001f
-            ? new Vector3(0f, desiredVelocity.y, 0f)
-            : new Vector3(sliding.x, desiredVelocity.y, sliding.z);
+        Vector3 slide = (dp - (-n * into)) * blockedSlideFactor;
+        return slide.sqrMagnitude < 0.0001f
+            ? new Vector3(0f, desired.y, 0f)
+            : new Vector3(slide.x, desired.y, slide.z);
     }
 
-    private static Vector3 GetPlanarVelocity(Vector3 velocity)
-    {
-        velocity.y = 0f;
-        return velocity;
-    }
+    private static Vector3 GetPlanarVelocity(Vector3 v) { v.y = 0f; return v; }
 
     #endregion
 }

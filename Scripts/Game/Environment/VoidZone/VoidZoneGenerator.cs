@@ -499,26 +499,15 @@ public sealed class VoidZoneGenerator : MonoBehaviour
         }
 
         VoidZone source = GetComponent<VoidZone>();
+
         if (source == null)
         {
             return;
         }
 
-        LayerMask sourceMask = GetPlayerLayersFromVoidZone(source);
-        SetPlayerLayersToVoidZone(targetVoidZone, sourceMask);
-
-        targetVoidZone.SetDebugLogs(source.EnableDebugLogs);
+        targetVoidZone.CopySettingsFrom(source);
     }
 
-    private static LayerMask GetPlayerLayersFromVoidZone(VoidZone source)
-    {
-        return source.PlayerLayers;
-    }
-
-    private static void SetPlayerLayersToVoidZone(VoidZone target, LayerMask mask)
-    {
-        target.SetPlayerLayers(mask);
-    }
 
     #endregion
 
