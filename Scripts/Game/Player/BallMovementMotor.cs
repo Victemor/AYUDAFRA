@@ -10,10 +10,16 @@ using UnityEngine;
 /// - Proyectar steering e impulsos sobre el plano de la barrera cuando hay contacto frontal,
 ///   usando la información de <see cref="BallCollisionResponder.HasBlockingContact"/>.
 ///
-/// Límite de responsabilidad — lo que este motor NO hace:
-/// El rebote contra barreras laterales es manejado por PhysicMaterials en Unity.
-/// Este motor no sobreescribe rb.linearVelocity al detectar una barrera; solo modula
-/// el input del jugador para que el steering "deslice" sobre ella.
+/// Límites de responsabilidad — lo que este motor NO hace:
+/// El rebote contra barreras es manejado 100% por código en <see cref="BallCollisionResponder"/>.
+/// Este motor no interviene en el cálculo del rebote; solo proyecta el input del jugador
+/// sobre el plano de la pared para que el steering "deslice" a lo largo de ella de forma natural.
+///
+/// Cambios respecto a la versión anterior:
+/// Se eliminó el mecanismo <c>awaitingInputAfterBarrier</c> + <c>barrierBounceDeceleration=50</c>
+/// que era el causante del bug "avanza y frena": cada contacto con una barrera activaba una
+/// fricción de 50 m/s² que detenía la bola en ~6 frames, bloqueando también el joystick y
+/// el mantenimiento de velocidad, creando un ciclo de frenado involuntario.
 /// </summary>
 [DefaultExecutionOrder(-15)]
 [RequireComponent(typeof(Rigidbody))]
@@ -23,8 +29,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     /// <summary>
     /// Estado del retroceso por colisión con obstáculo.
-    /// Agrupa timer y velocidad para que FixedUpdate pueda interrogar el estado
-    /// en un solo lugar sin multiplicar flags paralelos.
+    /// Agrupa timer y velocidad para eliminar booleans paralelos.
     /// </summary>
     private struct ImpactState
     {
@@ -73,19 +78,19 @@ public sealed class BallMovementMotor : MonoBehaviour
     private SphereRotationController rotationController;
 
     [SerializeField]
-    [Tooltip("Acumulador de impulsos de avance.")]
+    [Tooltip("Acumulador de impulsos de avance generados por swipes.")]
     private ImpulseAccumulator impulseAccumulator;
 
     [SerializeField]
-    [Tooltip("Acumulador de frenado.")]
+    [Tooltip("Acumulador de frenado generado por swipes hacia atrás.")]
     private BrakeAccumulator brakeAccumulator;
 
     [SerializeField]
-    [Tooltip("Sensor que detecta si la bola está en el suelo y la normal del suelo.")]
+    [Tooltip("Sensor de suelo. Detecta si la bola está en contacto y la normal del suelo.")]
     private BallGroundSensor groundSensor;
 
     [SerializeField]
-    [Tooltip("Responde a colisiones con obstáculos y expone el estado de bloqueo frontal.")]
+    [Tooltip("Responde a colisiones y expone el estado de bloqueo frontal para el steering.")]
     private BallCollisionResponder collisionResponder;
 
     [Header("Velocidad")]
@@ -94,24 +99,25 @@ public sealed class BallMovementMotor : MonoBehaviour
     private float maxSpeed = 12f;
 
     [SerializeField]
-    [Tooltip("Factor de control horizontal cuando la bola está en el aire. " +
-             "0 = sin control aéreo. 1 = control completo.")]
+    [Tooltip("Factor de control de steering cuando la bola está en el aire.\n" +
+             "0 = sin control aéreo. 1 = mismo control que en suelo.")]
     [Range(0f, 1f)]
     private float airControlFactor = 0.4f;
 
-    [Header("Fricción pasiva")]
+    [Header("Fricción Pasiva")]
     [SerializeField]
-    [Tooltip("Desaceleración en m/s² aplicada cada frame cuando no hay input activo.")]
+    [Tooltip("Desaceleración en m/s² aplicada cada frame cuando no hay mantenimiento de velocidad activo.\n" +
+             "Mantener bajo (0.6–1.2) para un feel de inercia suave.")]
     private float passiveFriction = 0.8f;
 
     [SerializeField]
-    [Tooltip("Velocidad planar mínima por debajo de la cual la bola se considera detenida.")]
+    [Tooltip("Velocidad planar mínima en m/s por debajo de la cual la bola se considera detenida.")]
     private float stopThreshold = 0.08f;
 
-    [Header("Slope Handling")]
+    [Header("Pendientes")]
     [SerializeField]
-    [Tooltip("Multiplicador de velocidad máxima al subir pendiente. " +
-             "La velocidad nunca supera maxSpeed * este valor en subida.")]
+    [Tooltip("Multiplicador de velocidad máxima al subir pendiente.\n" +
+             "La bola nunca supera maxSpeed × este valor en subida.")]
     [Range(0.1f, 1f)]
     private float uphillSpeedFactor = 0.72f;
 
@@ -121,65 +127,60 @@ public sealed class BallMovementMotor : MonoBehaviour
     private float downhillSpeedFactor = 1.2f;
 
     [SerializeField]
-    [Tooltip("Fuerza de adhesión al suelo aplicada mientras la bola está en contacto con él. " +
-             "Evita que despegue en pendientes y curvas del track.")]
+    [Tooltip("Fuerza de adhesión al suelo (m/s²). Evita que la bola despegue en curvas y rampas.")]
     private float groundStickForce = 28f;
 
     [SerializeField]
-    [Tooltip("Velocidad vertical máxima positiva permitida mientras la bola está en el suelo. " +
+    [Tooltip("Velocidad vertical máxima positiva permitida mientras la bola está en el suelo.\n" +
              "Limita saltos involuntarios en rampas.")]
     private float maxGroundedUpwardVelocity = 2.5f;
 
     [SerializeField]
-    [Tooltip("Velocidad vertical mínima permitida mientras la bola está en el suelo. " +
+    [Tooltip("Velocidad vertical mínima permitida mientras la bola está en el suelo.\n" +
              "Evita que la bola flote al bajar pendientes pronunciadas.")]
     private float minimumGroundedDownwardVelocity = -12f;
 
-    [Header("Impacto")]
+    [Header("Impacto con Obstáculos")]
     [SerializeField]
-    [Tooltip("Tiempo en segundos durante el que el retroceso por obstáculo bloquea el input. " +
-             "Mantenerlo bajo (≤ 0.15s) para que el jugador no perciba pérdida de control.")]
+    [Tooltip("Duración en segundos del período de recovery tras un impacto con obstáculo inamovible.\n" +
+             "Durante este tiempo el input del jugador está bloqueado. Mantener ≤ 0.15s.")]
     private float postImpactRecoveryDuration = 0.1f;
 
     [SerializeField]
-    [Tooltip("Velocidad de disipación del vector de retroceso en m/s². " +
-             "Valores altos disipan el retroceso rápidamente.")]
+    [Tooltip("Velocidad de disipación del vector de retroceso en m/s².\n" +
+             "Valores altos (≥ 16) disipan el retroceso rápidamente para devolver control al jugador.")]
     private float impactVelocityDecay = 16f;
 
-    [Header("Post-Barrera")]
+    [Header("Deslizamiento Lateral en Pared")]
     [SerializeField]
-    [Tooltip("Desaceleración en m/s² aplicada tras un choque con barrera. " +
-             "Reemplaza la fricción pasiva normal mientras awaitingInputAfterBarrier está activo. " +
-             "Valores altos (≥ 30) detienen la bola en 1-2 frames, evitando que la cámara " +
-             "siga la dirección del rebote en lugar de la cara principal de la pelota. " +
-             "Recomendado: 40–80.")]
-    private float barrierBounceDeceleration = 50f;
-
-    [Header("Deslizamiento lateral")]
-    [SerializeField]
-    [Tooltip("Factor aplicado a la componente de deslizamiento cuando la bola está bloqueada por una pared. " +
-             "1.0 = deslizamiento completo (la bola se mueve a velocidad plena a lo largo de la pared). " +
-             "0.7 = deslizamiento reducido (algo de velocidad se pierde contra la pared).")]
+    [Tooltip("Factor aplicado a la componente de deslizamiento cuando la bola está bloqueada por una pared.\n" +
+             "1.0 = deslizamiento completo sin pérdida de velocidad lateral.\n" +
+             "0.9 = deslizamiento con algo de fricción de pared.\n" +
+             "Recomendado: 0.95–1.0 para que el jugador no pierda velocidad al bordear paredes.")]
     [Range(0f, 1f)]
-    private float blockedSlideFactor = 0.9f;
+    private float blockedSlideFactor = 0.98f;
 
     [Header("Steering")]
     [SerializeField]
-    [Tooltip("Velocidad máxima en grados/s a la que la dirección de velocidad planar " +
-             "sigue al forward lógico del jugador.")]
-    private float steeringDegreesPerSecond = 240f;
+    [Tooltip("Velocidad máxima en grados/s a la que la dirección de velocidad planar\n" +
+             "sigue al forward lógico del jugador. Aumentar para giros más reactivos.")]
+    private float steeringDegreesPerSecond = 340f;
 
     [SerializeField]
-    [Tooltip("Diferencia angular en grados a partir de la cual se aplica el 100% de steeringDegreesPerSecond. " +
-             "Ángulos menores aplican una fracción proporcional (curva suave).")]
-    [Range(5f, 90f)]
-    private float steeringAngleForFullRate = 15f;
+    [Tooltip("Diferencia angular en grados a partir de la cual se aplica el 100% de steeringDegreesPerSecond.\n" +
+             "Ángulos menores aplican una fracción proporcional (curva de respuesta suave).\n" +
+             "Valores más bajos (5–10°) hacen que la velocidad máxima se alcance antes,\n" +
+             "resultando en un steering más reactivo en el centro.")]
+    [Range(3f, 45f)]
+    private float steeringAngleForFullRate = 7f;
 
     [SerializeField]
-    [Tooltip("Exponente de la curva de respuesta del steering. " +
-             "1 = lineal. 1.5 = suave en el centro, más agresivo en los extremos.")]
+    [Tooltip("Exponente de la curva de respuesta del steering.\n" +
+             "1 = lineal (respuesta constante).\n" +
+             "1.15 = ligeramente suave en el inicio, más agresivo pasado el umbral.\n" +
+             "Evitar valores altos (>1.5) que crean dead zones perceptibles.")]
     [Range(1f, 3f)]
-    private float steeringResponseExponent = 1.5f;
+    private float steeringResponseExponent = 1.15f;
 
     #endregion
 
@@ -193,7 +194,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     private ImpactState     impactState;
     private ForcedStopState forcedStopState;
 
-    private float speedBoostMultiplier   = 1f;
+    private float speedBoostMultiplier = 1f;
     private float jumpBypassTimer;
 
     private bool  maintainCurrentSpeed;
@@ -201,49 +202,44 @@ public sealed class BallMovementMotor : MonoBehaviour
     private float joystickBrakeDeceleration;
 
     /// <summary>
-    /// Bloquea steering e impulsos tras un choque con barrera.
-    /// El rebote del PhysicMaterial decae libremente por fricción pasiva.
-    /// Se libera únicamente cuando el jugador da input explícito (swipe o kickstart).
+    /// Multiplicadores aplicados por el power-up ReducedInertia.
+    /// Se aplican sobre passiveFriction y groundStickForce respectivamente.
     /// </summary>
-    private bool awaitingInputAfterBarrier;
-
-    /// <summary>Multiplicador sobre passiveFriction aplicado por el power-up ReducedInertia.</summary>
     private float inertiaFrictionMultiplier    = 1f;
-
-    /// <summary>Multiplicador sobre groundStickForce aplicado por el power-up ReducedInertia.</summary>
     private float inertiaGroundStickMultiplier = 1f;
 
     #endregion
 
     #region Properties
 
-    /// <summary>Velocidad planar actual en m/s.</summary>
-    public float   CurrentSpeed          => GetPlanarVelocity(rb.linearVelocity).magnitude;
+    /// <summary>Velocidad planar (XZ) actual en m/s.</summary>
+    public float CurrentSpeed => GetPlanarVelocity(rb.linearVelocity).magnitude;
 
-    /// <summary>Alias de <see cref="CurrentSpeed"/>. Mantenido por compatibilidad.</summary>
-    public float   CurrentPlanarVelocity => CurrentSpeed;
-
-    /// <summary>Velocidad 3D completa del Rigidbody.</summary>
-    public Vector3 CurrentVelocity       => rb.linearVelocity;
-
-    /// <summary>Velocidad máxima configurada sin boost activo.</summary>
-    public float   MaxSpeed              => maxSpeed;
-
-    /// <summary><c>true</c> mientras hay un retroceso por impacto activo.</summary>
-    public bool    IsRecoveringFromImpact => impactState.IsActive;
+    /// <summary>Alias de <see cref="CurrentSpeed"/>. Expuesto para compatibilidad con zonas de boost.</summary>
+    public float CurrentPlanarVelocity => CurrentSpeed;
 
     /// <summary>
-    /// Última dirección de movimiento válida del jugador.
-    /// Usado por <see cref="BallCollisionResponder"/> como fallback de dirección cuando la velocidad es baja.
+    /// Velocidad máxima configurada en m/s.
+    /// Usada por sistemas externos (cámara, UI) para normalizar la velocidad actual.
+    /// El techo efectivo en runtime puede ser mayor si hay un <see cref="speedBoostMultiplier"/> activo.
+    /// </summary>
+    public float MaxSpeed => maxSpeed;
+
+    /// <summary>
+    /// Forward lógico más reciente con velocidad suficiente para ser válido.
+    /// Usado por <see cref="BallCollisionResponder"/> como fallback de dirección cuando
+    /// la velocidad es baja.
     /// </summary>
     public Vector3 LastValidMoveDirection =>
         rotationController != null ? rotationController.CurrentForward : Vector3.forward;
 
     /// <summary>
-    /// Indica si la bola está esperando input explícito después de chocar con una barrera.
-    /// La cámara puede usar este estado para ignorar velocidad residual de rebote.
+    /// Mantenido por compatibilidad con sistemas de cámara que lo referencian.
+    /// Siempre devuelve <c>false</c>: el mecanismo awaitingInputAfterBarrier fue eliminado
+    /// porque causaba el bug "avanza y frena" al activar una fricción de 50 m/s² en cada
+    /// contacto con barrera, deteniendo la bola en ~6 frames repetidamente.
     /// </summary>
-    public bool IsAwaitingInputAfterBarrier => awaitingInputAfterBarrier;
+    public bool IsAwaitingInputAfterBarrier => false;
 
     #endregion
 
@@ -294,6 +290,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         UpdateImpactRecovery();
         NotifyAccumulators();
 
+        // ImpactState: retroceso por obstáculo — bloquea input durante la recuperación.
         if (impactState.IsActive)
         {
             ApplyImpactVelocity();
@@ -302,6 +299,7 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
+        // ForcedStop: detención al llegar a la meta.
         if (forcedStopState.IsActive)
         {
             ApplyForcedStop();
@@ -310,15 +308,11 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
-        // Impulso y steering solo corren con input explícito del jugador.
-        // Tras un choque con barrera, awaitingInputAfterBarrier bloquea ambos
-        // para que la bola no vuelva a avanzar sola con la inercia post-rebote.
-        if (!awaitingInputAfterBarrier)
-        {
-            ApplyPendingImpulse();
-            ApplySteering();
-        }
-
+        // Pipeline normal: impulso, steering, frenos, fricción, adhesión.
+        // El steering y el impulso proyectan su forward sobre el plano de la pared
+        // cuando HasBlockingContact es true, convirtiendo la presión en deslizamiento.
+        ApplyPendingImpulse();
+        ApplySteering();
         ApplyPendingBrake();
         ApplyJoystickBrakeForce();
         ApplyPassiveFriction();
@@ -333,23 +327,15 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void HandleImpulseReady(float impulse)
     {
-        if (awaitingInputAfterBarrier)
-            CancelPlanarVelocity();
-
-        awaitingInputAfterBarrier = false;
-        pendingImpulse           += impulse;
-        hasNewImpulse             = true;
+        pendingImpulse += impulse;
+        hasNewImpulse   = true;
         brakeAccumulator?.ResetConsecutive();
     }
 
     private void HandleBrakeReady(float brakeForce)
     {
-        if (awaitingInputAfterBarrier)
-            CancelPlanarVelocity();
-
-        awaitingInputAfterBarrier = false;
-        pendingBrake             += brakeForce;
-        hasNewBrake               = true;
+        pendingBrake += brakeForce;
+        hasNewBrake   = true;
         impulseAccumulator?.ResetConsecutive();
     }
 
@@ -372,38 +358,12 @@ public sealed class BallMovementMotor : MonoBehaviour
         maintainCurrentSpeed      = false;
         maintainedSpeedTarget     = 0f;
         joystickBrakeDeceleration = 0f;
-        awaitingInputAfterBarrier = false;
 
         rb.linearVelocity  = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
 
         impulseAccumulator?.ResetConsecutive();
         brakeAccumulator?.ResetConsecutive();
-    }
-
-    /// <summary>
-    /// Notifica al motor que la bola acaba de chocar con una barrera.
-    ///
-    /// Efectos:
-    /// - Limpia impulsos y frenos pendientes.
-    /// - Desactiva el mantenimiento de velocidad (evita que el joystick mantenga
-    ///   la velocidad hacia la barrera después del rebote).
-    /// - Activa <c>awaitingInputAfterBarrier</c>, que bloquea <c>ApplySteering</c>
-    ///   y <c>ApplyPendingImpulse</c> hasta que el jugador dé input explícito.
-    ///
-    /// El rebote del PhysicMaterial sigue vigente — este método no toca
-    ///   <c>rb.linearVelocity</c>. La fricción pasiva lo decelerará naturalmente.
-    /// Llamado por <see cref="BallCollisionResponder.CancelIntoWallVelocity"/>.
-    /// </summary>
-    public void NotifyBarrierHit()
-    {
-        pendingImpulse            = 0f;
-        pendingBrake              = 0f;
-        hasNewImpulse             = false;
-        hasNewBrake               = false;
-        maintainCurrentSpeed      = false;
-        maintainedSpeedTarget     = 0f;
-        awaitingInputAfterBarrier = true;
     }
 
     /// <summary>
@@ -427,9 +387,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         float   c = Mathf.Clamp01(multiplier);
         Vector3 v = rb.linearVelocity;
-        v.x              *= c;
-        v.z              *= c;
-        rb.linearVelocity = v;
+        v.x               *= c;
+        v.z               *= c;
+        rb.linearVelocity  = v;
     }
 
     /// <summary>
@@ -459,7 +419,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     /// <summary>
     /// Suprime temporalmente el drive del jugador sin aplicar retroceso.
-    /// Útil en colisiones que solo deben interrumpir el impulso activo.
+    /// Útil en colisiones con obstáculos empujables que solo interrumpen el impulso activo.
     /// </summary>
     public void SuppressDrive(float duration)
     {
@@ -492,18 +452,15 @@ public sealed class BallMovementMotor : MonoBehaviour
         pendingBrake   = 0f;
     }
 
-    /// <summary>
-    /// Cancela la detención forzada y devuelve el control al jugador.
-    /// </summary>
+    /// <summary>Cancela la detención forzada y devuelve el control al jugador.</summary>
     public void EndForcedStop()
     {
         forcedStopState = ForcedStopState.Default;
     }
 
     /// <summary>
-    /// Aplica multiplicadores de inertia reduction desde un power-up.
+    /// Aplica multiplicadores de inertia reduction desde el power-up ReducedInertia.
     /// Reduce la fricción pasiva y la adhesión al suelo durante el efecto activo.
-    /// Llamado por <see cref="BallPowerUpController"/> al recolectar ReducedInertia.
     /// </summary>
     /// <param name="frictionMult">Multiplicador sobre passiveFriction [0–1]. 0.3 = 70% menos fricción.</param>
     /// <param name="groundStickMult">Multiplicador sobre groundStickForce [0–1]. 0.4 = 60% menos adhesión.</param>
@@ -513,10 +470,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         inertiaGroundStickMultiplier = Mathf.Clamp01(groundStickMult);
     }
 
-    /// <summary>
-    /// Revierte los multiplicadores de inertia reduction a sus valores neutros.
-    /// Llamado por <see cref="BallPowerUpController"/> al expirar el efecto.
-    /// </summary>
+    /// <summary>Revierte los multiplicadores de inertia reduction a sus valores neutros.</summary>
     public void ClearInertiaReduction()
     {
         inertiaFrictionMultiplier    = 1f;
@@ -528,8 +482,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     #region Public API — Jump
 
     /// <summary>
-    /// Aplica un impulso vertical. Usa <c>Mathf.Max</c> para no cancelar velocidad vertical
-    /// positiva preexistente (por ejemplo, al pisar un JumpPad mientras se sube una rampa).
+    /// Aplica un impulso vertical.
     /// El bypass timer evita que <see cref="ClampGroundedVerticalVelocity"/> anule el salto
     /// en el mismo frame.
     /// </summary>
@@ -579,11 +532,8 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     public void ApplyJoystickKickstart(float impulse)
     {
-        if (awaitingInputAfterBarrier)
-            CancelPlanarVelocity();
-
-        awaitingInputAfterBarrier = false;
         if (impulse <= 0f) return;
+
         Vector3 fwd = GetMovementForward();
         Vector3 v   = rb.linearVelocity;
         Vector3 p   = GetPlanarVelocity(v) + fwd * impulse;
@@ -626,7 +576,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void NotifyAccumulators()
     {
-        float speed    = CurrentSpeed;
+        float speed       = CurrentSpeed;
         float maxEffective = maxSpeed * speedBoostMultiplier;
         impulseAccumulator?.NotifyCurrentSpeed(speed, maxEffective);
         brakeAccumulator?.NotifyCurrentSpeed(speed);
@@ -665,7 +615,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// <summary>
     /// Aplica el impulso pendiente en la dirección del forward actual.
     /// Si la bola está bloqueada por una pared, el forward se proyecta sobre el plano
-    /// de la barrera para que el swipe produzca deslizamiento en lugar de presión contra la pared.
+    /// de la barrera para que el swipe produzca deslizamiento en lugar de presión.
     /// </summary>
     private void ApplyPendingImpulse()
     {
@@ -703,18 +653,19 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// <summary>
     /// Rota gradualmente la dirección de velocidad planar hacia el forward del jugador.
     /// La velocidad se proyecta sobre el plano de la pared si hay bloqueo frontal activo,
-    /// lo que convierte el steering en deslizamiento en lugar de presión contra la barrera.
+    /// convirtiendo el steering en deslizamiento en lugar de presión contra la barrera.
     /// </summary>
     private void ApplySteering()
     {
-        Vector3 v    = rb.linearVelocity;
-        Vector3 p    = GetPlanarVelocity(v);
+        Vector3 v     = rb.linearVelocity;
+        Vector3 p     = GetPlanarVelocity(v);
         float   speed = p.magnitude;
         if (speed <= stopThreshold) return;
 
         Vector3 targetFwd = rotationController != null
             ? rotationController.CurrentForward
             : Vector3.forward;
+
         targetFwd.y = 0f;
         if (targetFwd.sqrMagnitude < 0.0001f) return;
         targetFwd.Normalize();
@@ -724,7 +675,11 @@ public sealed class BallMovementMotor : MonoBehaviour
         float   normAngle     = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
         float   effectiveRate = steeringDegreesPerSecond * Mathf.Pow(normAngle, steeringResponseExponent);
 
-        Vector3 steered   = Vector3.RotateTowards(
+        // Reducción de control aéreo cuando la bola no está en el suelo.
+        if (groundSensor != null && !groundSensor.IsGrounded)
+            effectiveRate *= airControlFactor;
+
+        Vector3 steered = Vector3.RotateTowards(
             currentDir, targetFwd,
             effectiveRate * Mathf.Deg2Rad * Time.fixedDeltaTime,
             0f);
@@ -745,7 +700,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         float ns = Mathf.Max(stopThreshold, speed - pendingBrake);
         rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
-        pendingBrake = 0f;
+        pendingBrake      = 0f;
     }
 
     private void ApplyJoystickBrakeForce()
@@ -780,14 +735,8 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
-        // Tras un choque con barrera se aplica una desaceleración mucho mayor que la fricción
-        // pasiva normal. Objetivo: detener el rebote en 1-2 frames para que la cámara no
-        // abandone la cara principal de la pelota y siga la dirección del rebote.
-        float friction = awaitingInputAfterBarrier
-            ? barrierBounceDeceleration
-            : passiveFriction * inertiaFrictionMultiplier;
-
-        float ns = Mathf.MoveTowards(speed, 0f, friction * Time.fixedDeltaTime);
+        float friction = passiveFriction * inertiaFrictionMultiplier;
+        float ns       = Mathf.MoveTowards(speed, 0f, friction * Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
     }
 
@@ -803,6 +752,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (groundSensor == null || !groundSensor.IsGrounded) return;
         if (impactState.IsActive || forcedStopState.IsActive) return;
+
         rb.AddForce(
             -groundSensor.GroundNormal * groundStickForce * inertiaGroundStickMultiplier,
             ForceMode.Acceleration);
@@ -827,7 +777,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         Vector3 p     = GetPlanarVelocity(v);
         float   speed = p.magnitude;
 
-        // Si la velocidad actual supera el target guardado, actualizar el target.
+        // Si la velocidad actual supera el target, actualizar el target.
         // Permite que el jugador acelere por encima del valor de captura inicial.
         if (speed > maintainedSpeedTarget) { maintainedSpeedTarget = speed; return; }
 
@@ -844,7 +794,9 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private Vector3 GetMovementForward()
     {
-        Vector3 fwd = rotationController != null ? rotationController.CurrentForward : transform.forward;
+        Vector3 fwd = rotationController != null
+            ? rotationController.CurrentForward
+            : transform.forward;
 
         if (groundSensor != null && groundSensor.IsGrounded)
         {
@@ -868,7 +820,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     /// <summary>
     /// Proyecta la velocidad deseada sobre el plano de la barrera cuando hay bloqueo frontal.
-    /// Esto convierte la componente INTO la pared en deslizamiento lateral.
+    /// Convierte la componente INTO la pared en deslizamiento lateral con pérdida mínima de velocidad.
     /// </summary>
     private Vector3 ResolveBlockedVelocity(Vector3 desired)
     {
@@ -883,7 +835,10 @@ public sealed class BallMovementMotor : MonoBehaviour
         float   into = Vector3.Dot(dp, -n);
         if (into <= 0f) return desired;
 
+        // Proyectar sobre el plano de la pared y aplicar factor de deslizamiento.
+        // blockedSlideFactor = 0.98 → prácticamente sin pérdida lateral al bordear paredes.
         Vector3 slide = (dp - (-n * into)) * blockedSlideFactor;
+
         return slide.sqrMagnitude < 0.0001f
             ? new Vector3(0f, desired.y, 0f)
             : new Vector3(slide.x, desired.y, slide.z);
@@ -895,11 +850,6 @@ public sealed class BallMovementMotor : MonoBehaviour
         return v;
     }
 
-    /// <summary>
-    /// Zeroes the planar (XZ) velocity while preserving the vertical component.
-    /// Called when the player gives input immediately after a barrier bounce,
-    /// so the residual bounce velocity does not fight the new impulse direction.
-    /// </summary>
     private void CancelPlanarVelocity()
     {
         Vector3 v         = rb.linearVelocity;

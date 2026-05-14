@@ -32,31 +32,6 @@ public sealed class CameraFollowController : MonoBehaviour
     [Tooltip("Configuración de la cámara.")]
     private CameraFollowConfig config;
 
-    [Header("Forward Reference")]
-
-    [SerializeField]
-    [Tooltip("Velocidad mínima en m/s a partir de la cual se puede usar la dirección de velocidad real.")]
-    private float velocityForwardThreshold = 0.5f;
-
-    [SerializeField]
-    [Tooltip("Ángulo máximo permitido entre la velocidad real y el forward lógico para usar la velocidad como referencia. Si lo supera, se usa el forward lógico.")]
-    [Range(5f, 120f)]
-    private float maxVelocityForwardDivergence = 45f;
-
-    [SerializeField]
-    [Tooltip("Si está activo, la cámara puede usar la dirección de velocidad cuando está alineada con el forward lógico.")]
-    private bool useVelocityForwardWhenAligned = true;
-
-    [Header("Barrier Camera Stabilization")]
-
-    [SerializeField]
-    [Tooltip("Tiempo de suavizado del look-ahead mientras la bola espera input después de chocar con una barrera.")]
-    private float postBarrierLookAheadSmoothTime = 0.05f;
-
-    [SerializeField]
-    [Tooltip("Tiempo de suavizado de distancia dinámica mientras la bola espera input después de chocar con una barrera.")]
-    private float postBarrierDistanceSmoothTime = 0.12f;
-
     #endregion
 
     #region Runtime
@@ -192,10 +167,6 @@ public sealed class CameraFollowController : MonoBehaviour
 
     private void OnValidate()
     {
-        velocityForwardThreshold = Mathf.Max(0f, velocityForwardThreshold);
-        maxVelocityForwardDivergence = Mathf.Clamp(maxVelocityForwardDivergence, 5f, 120f);
-        postBarrierLookAheadSmoothTime = Mathf.Max(0.01f, postBarrierLookAheadSmoothTime);
-        postBarrierDistanceSmoothTime = Mathf.Max(0.01f, postBarrierDistanceSmoothTime);
     }
 
     #endregion
@@ -254,38 +225,18 @@ public sealed class CameraFollowController : MonoBehaviour
     #region Forward Resolution
 
     /// <summary>
-    /// Resuelve la dirección de referencia de cámara.
-    /// Usa velocidad real solo cuando está alineada con el forward lógico y no existe estado post-barrera.
+    /// Resuelve la dirección de referencia de la cámara.
+    /// Siempre devuelve el forward lógico de la cara de la pelota
+    /// (<see cref="SphereRotationController.CurrentForward"/>), independientemente
+    /// de la dirección o magnitud de la velocidad física.
+    ///
+    /// Cambio: se eliminó la rama que usaba velocityForward cuando estaba alineado
+    /// con el forward lógico. Eso causaba que después de un rebote la cámara siguiera
+    /// brevemente la velocidad antes de corregirse hacia la cara de la bola.
     /// </summary>
     private Vector3 ResolveReferenceForward()
     {
-        Vector3 logicalForward = ResolveLogicalForward();
-
-        if (IsAwaitingInputAfterBarrier())
-        {
-            return logicalForward;
-        }
-
-        if (!useVelocityForwardWhenAligned || targetRigidbody == null)
-        {
-            return logicalForward;
-        }
-
-        Vector3 velocityForward = targetRigidbody.linearVelocity;
-        velocityForward.y = 0f;
-
-        if (velocityForward.magnitude < velocityForwardThreshold)
-        {
-            return logicalForward;
-        }
-
-        velocityForward.Normalize();
-
-        float divergence = Vector3.Angle(logicalForward, velocityForward);
-
-        return divergence <= maxVelocityForwardDivergence
-            ? velocityForward
-            : logicalForward;
+        return ResolveLogicalForward();
     }
 
     /// <summary>
@@ -321,7 +272,6 @@ public sealed class CameraFollowController : MonoBehaviour
 
     /// <summary>
     /// Aplica distancia dinámica según velocidad.
-    /// Durante post-barrera ignora la velocidad residual para evitar jalones visuales.
     /// </summary>
     private CameraRigPose ApplyDynamicDistance(CameraRigPose pose)
     {
@@ -330,17 +280,13 @@ public sealed class CameraFollowController : MonoBehaviour
             return pose;
         }
 
-        bool isPostBarrier = IsAwaitingInputAfterBarrier();
-
-        float speedNorm = movementMotor.MaxSpeed > 0f && !isPostBarrier
+        // isPostBarrier eliminado: IsAwaitingInputAfterBarrier siempre devuelve false.
+        float speedNorm = movementMotor.MaxSpeed > 0f
             ? Mathf.Clamp01(movementMotor.CurrentPlanarVelocity / movementMotor.MaxSpeed)
             : 0f;
 
         float targetExtraDistance = config.ExtraDistanceAtMaxSpeed * speedNorm;
-
-        float smoothTime = isPostBarrier
-            ? postBarrierDistanceSmoothTime
-            : config.DistanceSmoothTime;
+        float smoothTime = config.DistanceSmoothTime;
 
         currentExtraDistance = Mathf.SmoothDamp(
             currentExtraDistance,
@@ -372,7 +318,6 @@ public sealed class CameraFollowController : MonoBehaviour
 
     /// <summary>
     /// Aplica look-ahead usando la dirección de referencia actual.
-    /// Durante post-barrera elimina look-ahead por velocidad para que la cámara no mire hacia el rebote.
     /// </summary>
     private CameraRigPose ApplyLookAhead(CameraRigPose pose)
     {
@@ -381,9 +326,8 @@ public sealed class CameraFollowController : MonoBehaviour
             return pose;
         }
 
-        bool isPostBarrier = IsAwaitingInputAfterBarrier();
-
-        float speedNorm = movementMotor.MaxSpeed > 0f && !isPostBarrier
+        // isPostBarrier eliminado: IsAwaitingInputAfterBarrier siempre devuelve false.
+        float speedNorm = movementMotor.MaxSpeed > 0f
             ? Mathf.Clamp01(movementMotor.CurrentPlanarVelocity / movementMotor.MaxSpeed)
             : 0f;
 
@@ -391,9 +335,7 @@ public sealed class CameraFollowController : MonoBehaviour
                             + config.NormalLookAtOffset
                             + cachedReferenceForward * (config.LookAheadDistance * speedNorm);
 
-        float smoothTime = isPostBarrier
-            ? postBarrierLookAheadSmoothTime
-            : config.LookAheadSmoothTime;
+        float smoothTime = config.LookAheadSmoothTime;
 
         currentLookAheadTarget = Vector3.SmoothDamp(
             currentLookAheadTarget,
