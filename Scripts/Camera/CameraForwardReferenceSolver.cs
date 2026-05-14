@@ -4,143 +4,150 @@ namespace Game.CameraSystem
 {
     /// <summary>
     /// Resuelve la dirección horizontal suavizada de referencia para la cámara.
-    ///
-    /// Lee el forward intencional desde SphereRotationController.CurrentForward,
-    /// no la rotación física de la esfera rodando.
-    ///
-    /// El momentum controla la VELOCIDAD del giro, no si la cámara gira o no.
-    /// La cámara siempre sigue al objetivo — solo más lento en giros bruscos.
+    /// Usa suavizado en giros normales y catch-up agresivo en giros bruscos para evitar que la cámara quede atrasada.
     /// </summary>
     public sealed class CameraForwardReferenceSolver
     {
-        #region Constants
-
-        private const float SharpTurnAngle = 120f;
-        private const float SharpTurnSpeedMultiplier = 0.25f;
-        private const float MinimumMomentumForTracking = 0.15f;
-
-        #endregion
-
         #region Runtime
 
         private Vector3 smoothedForward = Vector3.forward;
-        private float alignmentMomentum;
         private Vector3 previousDesiredForward = Vector3.forward;
+        private float alignmentMomentum;
 
         #endregion
 
         #region Public API
 
         /// <summary>
-        /// Inicializa el solver con el forward intencional actual de la esfera.
+        /// Inicializa el solver con una dirección horizontal.
         /// </summary>
         public void Initialize(Vector3 sphereIntentForward)
         {
             smoothedForward = FlattenAndNormalize(sphereIntentForward);
             previousDesiredForward = smoothedForward;
-            alignmentMomentum = 0f;
+            alignmentMomentum = 1f;
         }
 
         /// <summary>
         /// Fuerza la alineación inmediata al forward dado sin suavizado.
-        /// Usado en respawn.
         /// </summary>
         public void SnapToForward(Vector3 sphereIntentForward)
         {
             smoothedForward = FlattenAndNormalize(sphereIntentForward);
             previousDesiredForward = smoothedForward;
-            alignmentMomentum = 0f;
+            alignmentMomentum = 1f;
         }
 
         /// <summary>
         /// Actualiza y devuelve la dirección horizontal de referencia suavizada.
-        /// sphereIntentForward debe ser SphereRotationController.CurrentForward.
         /// </summary>
         public Vector3 UpdateReferenceForward(
-            Vector3 sphereIntentForward,
+            Vector3 desiredForward,
             CameraFollowConfig config,
             float deltaTime,
             bool freezeTracking = false)
         {
-            Vector3 desiredForward = FlattenAndNormalize(sphereIntentForward);
+            if (config == null)
+            {
+                return smoothedForward;
+            }
+
+            Vector3 normalizedDesired = FlattenAndNormalize(desiredForward);
 
             if (freezeTracking)
             {
-                alignmentMomentum = 0f;
-                previousDesiredForward = desiredForward;
+                previousDesiredForward = normalizedDesired;
                 return smoothedForward;
             }
 
             if (smoothedForward.sqrMagnitude < 0.0001f)
             {
-                smoothedForward = desiredForward;
-                previousDesiredForward = desiredForward;
+                smoothedForward = normalizedDesired;
+                previousDesiredForward = normalizedDesired;
+                alignmentMomentum = 1f;
                 return smoothedForward;
             }
 
-            float angleToDesired = Vector3.Angle(smoothedForward, desiredForward);
+            float angleToDesired = Vector3.Angle(smoothedForward, normalizedDesired);
 
-            if (angleToDesired < config.MinimumDirectionAngle)
+            if (angleToDesired <= config.MinimumDirectionAngle)
             {
-                previousDesiredForward = desiredForward;
-                return smoothedForward;
-            }
-
-            // El momentum controla la velocidad del giro, no si gira o no.
-            // Se acumula cuando la dirección deseada es consistente frame a frame
-            // y decae cuando hay un cambio brusco de dirección.
-            float angleFromPrevious = Vector3.Angle(previousDesiredForward, desiredForward);
-            bool isConsistent = angleFromPrevious < config.CameraAlignmentConsistencyAngle;
-
-            alignmentMomentum = isConsistent
-                ? Mathf.MoveTowards(
+                smoothedForward = normalizedDesired;
+                previousDesiredForward = normalizedDesired;
+                alignmentMomentum = Mathf.MoveTowards(
                     alignmentMomentum,
                     1f,
-                    config.CameraAlignmentMomentumBuildRate * deltaTime)
-                : Mathf.MoveTowards(
-                    alignmentMomentum,
-                    0f,
-                    config.CameraAlignmentMomentumDecayRate * deltaTime);
+                    config.CameraAlignmentMomentumBuildRate * deltaTime);
 
-            previousDesiredForward = desiredForward;
+                return smoothedForward;
+            }
 
-            // Mínimo garantizado para que la cámara siempre siga al objetivo.
-            // Sin este piso, momentum = 0 bloquea completamente el seguimiento.
-            float effectiveMomentum = Mathf.Max(alignmentMomentum, MinimumMomentumForTracking);
+            UpdateMomentum(normalizedDesired, config, deltaTime);
 
-            // Los giros bruscos (> SharpTurnAngle) se hacen más lentos intencionalmente
-            // para evitar desorientación en móvil.
-            float turnSpeedMultiplier = angleToDesired >= SharpTurnAngle
-                ? SharpTurnSpeedMultiplier
+            if (angleToDesired >= config.SnapTurnAngle && config.SnapTurnBlend > 0f)
+            {
+                smoothedForward = Vector3.Slerp(
+                    smoothedForward,
+                    normalizedDesired,
+                    config.SnapTurnBlend);
+
+                smoothedForward = FlattenAndNormalize(smoothedForward);
+            }
+
+            float effectiveMomentum = Mathf.Max(
+                alignmentMomentum,
+                config.MinimumAlignmentMomentum);
+
+            float turnMultiplier = angleToDesired >= config.SharpTurnAngle
+                ? config.SharpTurnAlignmentMultiplier
                 : 1f;
 
             float effectiveSpeed =
-                config.ForwardAlignmentSpeed * effectiveMomentum * turnSpeedMultiplier;
+                config.ForwardAlignmentSpeed *
+                effectiveMomentum *
+                turnMultiplier;
 
             float maxRadians = Mathf.Deg2Rad * effectiveSpeed * Mathf.Max(0f, deltaTime);
 
             smoothedForward = Vector3.RotateTowards(
                 smoothedForward,
-                desiredForward,
+                normalizedDesired,
                 maxRadians,
                 0f);
 
-            smoothedForward.y = 0f;
-
-            smoothedForward = smoothedForward.sqrMagnitude < 0.0001f
-                ? desiredForward
-                : smoothedForward.normalized;
+            smoothedForward = FlattenAndNormalize(smoothedForward);
+            previousDesiredForward = normalizedDesired;
 
             return smoothedForward;
         }
 
         #endregion
 
-        #region Helpers
+        #region Private
+
+        private void UpdateMomentum(
+            Vector3 desiredForward,
+            CameraFollowConfig config,
+            float deltaTime)
+        {
+            float angleFromPrevious = Vector3.Angle(previousDesiredForward, desiredForward);
+            bool isConsistent = angleFromPrevious <= config.CameraAlignmentConsistencyAngle;
+
+            float targetMomentum = isConsistent ? 1f : config.MinimumAlignmentMomentum;
+            float rate = isConsistent
+                ? config.CameraAlignmentMomentumBuildRate
+                : config.CameraAlignmentMomentumDecayRate;
+
+            alignmentMomentum = Mathf.MoveTowards(
+                alignmentMomentum,
+                targetMomentum,
+                rate * deltaTime);
+        }
 
         private static Vector3 FlattenAndNormalize(Vector3 direction)
         {
             direction.y = 0f;
+
             return direction.sqrMagnitude < 0.0001f
                 ? Vector3.forward
                 : direction.normalized;

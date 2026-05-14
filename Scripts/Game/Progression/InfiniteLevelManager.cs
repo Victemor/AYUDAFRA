@@ -379,10 +379,7 @@ public sealed class InfiniteLevelManager : MonoBehaviour
     /// </summary>
     private void ConfigurePowerUps(TrackGenerationProfile trackProfile)
     {
-        if (powerUpGenerator == null)
-        {
-            return;
-        }
+        if (powerUpGenerator == null) return;
 
         float safeStart = progressionSettings.SafeStartLengthOverride > 0f
             ? progressionSettings.SafeStartLengthOverride
@@ -395,10 +392,12 @@ public sealed class InfiniteLevelManager : MonoBehaviour
         powerUpGenerator.GeneratePowerUps(
             trackGenerator.GeneratedMap,
             currentActiveSeed,
+            contentGenerator.ReservationMap,   // compartido con TrackContentGenerator
+            currentLevelIndex,
+            currentProgressionT,
             safeStart,
             safeEnd);
     }
-
     #endregion
 
     #region Adjacent Previews

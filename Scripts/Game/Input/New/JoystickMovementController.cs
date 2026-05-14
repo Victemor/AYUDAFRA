@@ -2,14 +2,8 @@ using UnityEngine;
 
 /// <summary>
 /// Conecta el eje Y del UnifiedBallInput con los comportamientos de movimiento por joystick.
-///
-/// Regla principal:
-/// - Dedo presionado (cualquier posición) → mantener velocidad actual.
-/// - Y adelante + pelota detenida    → impulso de arranque único.
-/// - Y atrás                         → freno continuo proporcional hasta 0.
-/// - Dedo suelto                     → liberar mantenimiento y freno.
-///
-/// El eje X sigue siendo responsabilidad de BallDirectionInputRouter.
+/// Mantiene velocidad mientras el dedo está presionado, frena al empujar hacia atrás
+/// y solo aplica arranque cuando el eje Y apunta explícitamente hacia adelante.
 /// </summary>
 public sealed class JoystickMovementController : MonoBehaviour
 {
@@ -42,6 +36,10 @@ public sealed class JoystickMovementController : MonoBehaviour
     [Tooltip("Impulso en m/s aplicado cuando el joystick arranca la pelota desde cero.")]
     private float kickstartImpulse = 3f;
 
+    [SerializeField]
+    [Tooltip("Si está activo, la bola solo arranca cuando el eje Y supera positivamente el umbral. Evita impulsos accidentales al iniciar swipes hacia atrás.")]
+    private bool requireForwardAxisForKickstart = true;
+
     [Header("Freno")]
 
     [SerializeField]
@@ -60,31 +58,47 @@ public sealed class JoystickMovementController : MonoBehaviour
 
     private void Reset()
     {
-        unifiedInput  = FindFirstObjectByType<UnifiedBallInput>();
+        unifiedInput = FindFirstObjectByType<UnifiedBallInput>();
         movementMotor = GetComponent<BallMovementMotor>();
     }
 
     private void Awake()
     {
         if (unifiedInput == null)
+        {
             unifiedInput = FindFirstObjectByType<UnifiedBallInput>();
+        }
 
         if (movementMotor == null)
+        {
             movementMotor = GetComponent<BallMovementMotor>();
+        }
     }
 
     private void OnEnable()
     {
         if (unifiedInput != null)
+        {
             unifiedInput.OnJoystickY += HandleJoystickY;
+        }
     }
 
     private void OnDisable()
     {
         if (unifiedInput != null)
+        {
             unifiedInput.OnJoystickY -= HandleJoystickY;
+        }
 
         ClearJoystickState();
+    }
+
+    private void OnValidate()
+    {
+        axisThreshold = Mathf.Clamp(axisThreshold, 0f, 0.5f);
+        kickstartSpeedThreshold = Mathf.Max(0f, kickstartSpeedThreshold);
+        kickstartImpulse = Mathf.Max(0f, kickstartImpulse);
+        maxJoystickBrakeDeceleration = Mathf.Max(0f, maxJoystickBrakeDeceleration);
     }
 
     #endregion
@@ -93,50 +107,77 @@ public sealed class JoystickMovementController : MonoBehaviour
 
     /// <summary>
     /// Procesa el eje Y emitido por UnifiedBallInput.
-    /// Se llama cada frame mientras el dedo está presionado y con 0 al soltarlo.
     /// </summary>
     private void HandleJoystickY(float yAxis)
-{
-    bool fingerIsDown = unifiedInput != null && unifiedInput.IsTracking;
-
-    if (!fingerIsDown)
     {
-        ClearJoystickState();
-        return;
+        bool fingerIsDown = unifiedInput != null && unifiedInput.IsTracking;
+
+        if (!fingerIsDown)
+        {
+            ClearJoystickState();
+            return;
+        }
+
+        if (movementMotor == null)
+        {
+            return;
+        }
+
+        if (yAxis < -axisThreshold)
+        {
+            HandleBackwardAxis(yAxis);
+            return;
+        }
+
+        HandleNeutralOrForwardAxis(yAxis);
     }
 
-    if (yAxis < -axisThreshold)
+    private void HandleBackwardAxis(float yAxis)
     {
-        // Atrás: freno continuo
         kickstartApplied = false;
-        movementMotor?.SetSpeedMaintenance(false);
+
+        movementMotor.SetSpeedMaintenance(false);
 
         float brakeStrength = Mathf.Clamp01((-yAxis - axisThreshold) / (1f - axisThreshold));
-        movementMotor?.SetJoystickBrake(brakeStrength * maxJoystickBrakeDeceleration);
+        movementMotor.SetJoystickBrake(brakeStrength * maxJoystickBrakeDeceleration);
     }
-    else
-    {
-        // Zona muerta O adelante: mantener velocidad siempre
-        movementMotor?.SetJoystickBrake(0f);
-        movementMotor?.SetSpeedMaintenance(true);
 
-        if (movementMotor != null)
+    private void HandleNeutralOrForwardAxis(float yAxis)
+    {
+        movementMotor.SetJoystickBrake(0f);
+
+        if (movementMotor.CurrentSpeed > kickstartSpeedThreshold)
         {
-            if (movementMotor.CurrentSpeed > kickstartSpeedThreshold)
-            {
-                // Pelota en movimiento: resetear para que pueda arrancar de nuevo si se detiene
-                kickstartApplied = false;
-            }
-            else if (!kickstartApplied)
-            {
-                // Pelota detenida + dedo presionado sin ir hacia atrás → arrancar
-                // No requiere Y > threshold: cualquier toque que no sea hacia atrás arranca
-                movementMotor.ApplyJoystickKickstart(kickstartImpulse);
-                kickstartApplied = true;
-            }
+            kickstartApplied = false;
+            movementMotor.SetSpeedMaintenance(true);
+            return;
         }
+
+        movementMotor.SetSpeedMaintenance(false);
+
+        if (!ShouldApplyKickstart(yAxis))
+        {
+            return;
+        }
+
+        movementMotor.ApplyJoystickKickstart(kickstartImpulse);
+        kickstartApplied = true;
     }
-}
+
+    private bool ShouldApplyKickstart(float yAxis)
+    {
+        if (kickstartApplied)
+        {
+            return false;
+        }
+
+        if (!requireForwardAxisForKickstart)
+        {
+            return yAxis >= -axisThreshold;
+        }
+
+        return yAxis > axisThreshold;
+    }
 
     /// <summary>
     /// Libera el mantenimiento y el freno al soltar el dedo.

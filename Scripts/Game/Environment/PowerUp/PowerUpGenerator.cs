@@ -2,19 +2,32 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Genera power-ups únicamente en oportunidades válidas del track:
-/// inicio de pendientes ascendentes y zonas inmediatamente previas a gaps.
-/// Nunca genera power-ups sobre rieles, aunque el riel tenga pendiente.
+/// Genera power-ups sobre la pista procedural.
+///
+/// Dos categorías independientes:
+///
+/// <list type="bullet">
+///   <item>
+///     <b>SpeedBoost (track gen)</b>: se coloca en oportunidades específicas de gameplay
+///     (inicio de pendiente ascendente, justo antes de un gap). Lógica idéntica a la anterior.
+///   </item>
+///   <item>
+///     <b>Collectibles</b>: distribuidos a lo largo de toda la pista con un intervalo variable.
+///     Respetan el <see cref="TrackSpawnReservationMap"/> compartido con <see cref="TrackContentGenerator"/>
+///     para evitar solapamiento con monedas y obstáculos.
+///     La probabilidad y el intervalo escalan con <c>progressionT</c> y el nivel actual.
+///   </item>
+/// </list>
 /// </summary>
 public sealed class PowerUpGenerator : MonoBehaviour
 {
     #region Constants
 
-    private const string RootName = "GeneratedPowerUps";
-    private const int SeedOffset = 777;
-    private const float DefaultInvalidDistance = -999f;
-    private const float MinimumValidSectionLength = 0.001f;
-    private const float GapEdgeSafetyOffset = 0.08f;
+    private const string RootName                  = "GeneratedPowerUps";
+    private const int    SeedOffset                = 777;
+    private const float  DefaultInvalidDistance    = -999f;
+    private const float  MinimumValidSectionLength = 0.001f;
+    private const float  GapEdgeSafetyOffset       = 0.08f;
 
     #endregion
 
@@ -22,68 +35,50 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
     [Header("Prefabs")]
     [SerializeField]
-    [Tooltip("Prefab del trampolín. Requiere un Collider marcado como IsTrigger y un componente JumpPad.")]
-    private GameObject jumpPadPrefab;
-
-    [SerializeField]
-    [Tooltip("Prefab de segmento de aceleración. El eje Z debe coincidir con la dirección de avance y su longitud base debe ser 1 unidad.")]
+    [Tooltip("Prefab de segmento de aceleración. El eje Z debe coincidir con la dirección de avance " +
+             "y su longitud base debe ser 1 unidad.")]
     private GameObject speedBoostZonePrefab;
 
-    [Header("Reglas de Generación")]
     [SerializeField]
-    [Tooltip("Permite generar power-ups en pendientes ascendentes sobre pista sólida.")]
+    [Tooltip("Prefab base para los pickups coleccionables. " +
+             "Debe tener un CollectiblePowerUp y un Collider marcado como IsTrigger. " +
+             "PowerUpGenerator le asigna el CollectiblePowerUpData correcto al instanciarlo.")]
+    private GameObject collectiblePickupPrefab;
+
+    [Header("Reglas de Generación — SpeedBoost")]
+    [SerializeField]
+    [Tooltip("Permite generar SpeedBoost en pendientes ascendentes sobre pista sólida.")]
     private bool enableSlopeOpportunities = true;
 
     [SerializeField]
-    [Tooltip("Permite generar power-ups justo antes de gaps desde pista sólida.")]
+    [Tooltip("Permite generar SpeedBoost justo antes de gaps desde pista sólida.")]
     private bool enableGapOpportunities = true;
 
     [SerializeField]
     [Range(0f, 1f)]
-    [Tooltip("Probabilidad de generar algún power-up al inicio de una pendiente ascendente.")]
+    [Tooltip("Probabilidad de generar SpeedBoost al inicio de una pendiente ascendente.")]
     private float slopeOpportunityChance = 0.65f;
 
     [SerializeField]
     [Range(0f, 1f)]
-    [Tooltip("Probabilidad de generar algún power-up justo antes de un gap.")]
+    [Tooltip("Probabilidad de generar SpeedBoost justo antes de un gap.")]
     private float gapOpportunityChance = 0.85f;
 
-    [SerializeField]
-    [Range(0f, 1f)]
-    [Tooltip("Probabilidad de elegir SpeedBoost cuando también puede elegirse JumpPad. 0.5 = ambos tienen la misma probabilidad.")]
-    private float speedBoostSelectionChance = 0.5f;
-
-    [Header("Espaciado")]
+    [Header("Espaciado — SpeedBoost")]
     [SerializeField]
     [Min(0f)]
-    [Tooltip("Distancia mínima entre dos oportunidades aceptadas.")]
-    private float minDistanceBetweenPowerUps = 14f;
+    [Tooltip("Distancia mínima entre dos oportunidades aceptadas de SpeedBoost.")]
+    private float minDistanceBetweenSpeedBoosts = 14f;
 
-    [Header("Jump Pad")]
+    [Header("Speed Boost — Visual")]
     [SerializeField]
     [Min(0f)]
-    [Tooltip("Offset vertical mínimo para evitar que el JumpPad quede embebido en la pista.")]
-    private float jumpPadSurfaceOffset = 0.08f;
-
-    [SerializeField]
-    [Min(0f)]
-    [Tooltip("Distancia desde el inicio de la pendiente donde se coloca el JumpPad.")]
-    private float jumpPadSlopeStartForwardOffset = 0.35f;
-
-    [SerializeField]
-    [Min(0f)]
-    [Tooltip("Distancia antes del borde del gap donde se coloca el JumpPad.")]
-    private float jumpPadBeforeGapOffset = 0.75f;
-
-    [Header("Speed Boost")]
-    [SerializeField]
-    [Min(0f)]
-    [Tooltip("Offset vertical mínimo para evitar z-fighting. Debe ser bajo para quedar sobre la pista.")]
+    [Tooltip("Offset vertical sobre la pista para evitar z-fighting.")]
     private float speedBoostSurfaceOffset = 0.01f;
 
     [SerializeField]
     [Min(0f)]
-    [Tooltip("Distancia adicional antes del inicio de la pendiente/rampa desde donde empieza el SpeedBoost.")]
+    [Tooltip("Distancia adicional antes del inicio de la sección desde donde empieza el SpeedBoost.")]
     private float speedBoostLeadInDistance = 0.75f;
 
     [SerializeField]
@@ -96,51 +91,86 @@ public sealed class PowerUpGenerator : MonoBehaviour
     [Tooltip("Longitud mínima visual de cada segmento de SpeedBoost.")]
     private float minimumSpeedBoostSegmentVisualLength = 0.25f;
 
+    [Header("Coleccionables")]
+    [SerializeField]
+    [Tooltip("Lista de ScriptableObjects que definen los tipos de power-ups coleccionables " +
+             "disponibles. Cada uno tiene su propia probabilidad, nivel mínimo y curva de progresión.")]
+    private CollectiblePowerUpData[] collectiblePowerUps;
+
+    [SerializeField]
+    [Min(0)]
+    [Tooltip("Cantidad mínima de power-ups coleccionables por nivel. " +
+             "0 = puede que no aparezca ninguno (especialmente en niveles iniciales).")]
+    private int minCollectiblesPerLevel = 0;
+
+    [SerializeField]
+    [Min(0)]
+    [Tooltip("Cantidad máxima de power-ups coleccionables por nivel. " +
+             "La cantidad real se elige aleatoriamente entre min y max.")]
+    private int maxCollectiblesPerLevel = 3;
+
+    [SerializeField]
+    [Min(5f)]
+    [Tooltip("Distancia mínima en metros entre dos coleccionables. " +
+             "Evita que aparezcan agrupados aunque la selección aleatoria los ponga cerca.")]
+    private float minDistanceBetweenCollectibles = 20f;
+
     [Header("Debug")]
     [SerializeField]
-    [Tooltip("Si está activo, imprime resumen de generación.")]
+    [Tooltip("Si está activo, imprime resumen de generación en consola.")]
     private bool enableDebugLogs = true;
 
     [SerializeField]
-    [Tooltip("SOLO DEBUG. Si está activo, ignora reglas de oportunidad, pero aun así evita rieles y gaps.")]
+    [Tooltip("SOLO DEBUG. Si está activo, ignora reglas de oportunidad para SpeedBoost " +
+             "y distribuye coleccionables con intervalo mínimo. " +
+             "Aun así evita rieles y gaps.")]
     private bool debugGenerateAnywhere = false;
 
     [SerializeField]
     [Min(1)]
-    [Tooltip("SOLO DEBUG. Cantidad máxima de power-ups en modo Debug Generate Anywhere.")]
-    private int debugMaxPowerUps = 20;
+    [Tooltip("SOLO DEBUG. Máximo de SpeedBoosts en modo Debug Generate Anywhere.")]
+    private int debugMaxSpeedBoosts = 10;
 
     [SerializeField]
     [Min(0f)]
-    [Tooltip("SOLO DEBUG. Distancia mínima entre power-ups en modo Debug Generate Anywhere.")]
-    private float debugMinDistanceBetweenPowerUps = 8f;
+    [Tooltip("SOLO DEBUG. Distancia mínima entre SpeedBoosts en modo Debug Generate Anywhere.")]
+    private float debugMinDistanceBetweenSpeedBoosts = 8f;
 
     #endregion
 
     #region Runtime
 
     private Transform generatedRoot;
-    private float lastAcceptedPowerUpDistance = DefaultInvalidDistance;
+    private float     lastAcceptedSpeedBoostDistance = DefaultInvalidDistance;
 
     #endregion
 
     #region Public API
 
-    /// <summary>
-    /// Mantiene compatibilidad con el flujo del InfiniteLevelManager.
-    /// </summary>
-    public void DisableAutoGeneration()
-    {
-    }
+    /// <summary>Mantiene compatibilidad con el flujo del InfiniteLevelManager.</summary>
+    public void DisableAutoGeneration() { }
 
     /// <summary>
-    /// Genera los power-ups sobre el mapa procedural recibido.
+    /// Genera SpeedBoosts y coleccionables sobre el mapa procedural.
     /// </summary>
+    /// <param name="map">Mapa runtime de la pista.</param>
+    /// <param name="seed">Semilla de generación.</param>
+    /// <param name="sharedReservationMap">
+    ///   Mapa de reservas compartido con <see cref="TrackContentGenerator"/>.
+    ///   Si es <c>null</c>, los coleccionables se colocan sin verificar solapamientos.
+    /// </param>
+    /// <param name="levelIndex">Índice del nivel actual (comienza en 1).</param>
+    /// <param name="progressionT">Factor de progresión [0 = inicio, 1 = dificultad máxima].</param>
+    /// <param name="safeStartLength">Metros iniciales sin power-ups.</param>
+    /// <param name="safeEndLength">Metros finales sin power-ups.</param>
     public void GeneratePowerUps(
         TrackRuntimeMap map,
         int seed,
+        TrackSpawnReservationMap sharedReservationMap,
+        int levelIndex,
+        float progressionT,
         float safeStartLength = 0f,
-        float safeEndLength = 0f)
+        float safeEndLength   = 0f)
     {
         ClearPowerUps();
 
@@ -153,16 +183,14 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
         if (debugGenerateAnywhere)
         {
-            GenerateDebugPowerUps(map, seed);
+            GenerateDebugPowerUps(map, seed, sharedReservationMap, levelIndex, progressionT);
             return;
         }
 
-        GenerateGameplayPowerUps(map, seed, safeStartLength, safeEndLength);
+        GenerateGameplayPowerUps(map, seed, sharedReservationMap, levelIndex, progressionT, safeStartLength, safeEndLength);
     }
 
-    /// <summary>
-    /// Elimina los power-ups generados previamente.
-    /// </summary>
+    /// <summary>Elimina todos los power-ups generados previamente.</summary>
     public void ClearPowerUps()
     {
         Transform existingRoot = transform.Find(RootName);
@@ -173,52 +201,46 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
 #if UNITY_EDITOR
             if (!Application.isPlaying)
-            {
                 DestroyImmediate(existingRoot.gameObject);
-            }
             else
-            {
                 Destroy(existingRoot.gameObject);
-            }
 #else
             Destroy(existingRoot.gameObject);
 #endif
         }
 
-        generatedRoot = null;
-        lastAcceptedPowerUpDistance = DefaultInvalidDistance;
+        generatedRoot                    = null;
+        lastAcceptedSpeedBoostDistance   = DefaultInvalidDistance;
     }
 
     #endregion
 
     #region Gameplay Generation
 
-    /// <summary>
-    /// Genera power-ups solamente en oportunidades válidas de gameplay.
-    /// </summary>
     private void GenerateGameplayPowerUps(
-        TrackRuntimeMap map,
-        int seed,
-        float safeStartLength,
-        float safeEndLength)
+        TrackRuntimeMap          map,
+        int                      seed,
+        TrackSpawnReservationMap sharedReservationMap,
+        int                      levelIndex,
+        float                    progressionT,
+        float                    safeStartLength,
+        float                    safeEndLength)
     {
         System.Random random = new System.Random(seed + SeedOffset);
         IReadOnlyList<TrackSectionDefinition> sections = map.Sections;
 
         float totalDistance = map.PathSampler.TotalDistance;
-        float usableStart = Mathf.Max(0f, safeStartLength);
-        float usableEnd = Mathf.Max(usableStart, totalDistance - Mathf.Max(0f, safeEndLength));
+        float usableStart   = Mathf.Max(0f, safeStartLength);
+        float usableEnd     = Mathf.Max(usableStart, totalDistance - Mathf.Max(0f, safeEndLength));
 
-        lastAcceptedPowerUpDistance = usableStart;
+        lastAcceptedSpeedBoostDistance = usableStart;
 
-        int slopeOpportunities = 0;
-        int gapOpportunities = 0;
-        int acceptedOpportunities = 0;
-        int jumpPadsPlaced = 0;
-        int speedBoostPathsPlaced = 0;
+        int speedBoostPathsPlaced    = 0;
         int speedBoostSegmentsPlaced = 0;
-        int rejectedRailSections = 0;
+        int collectiblesPlaced       = 0;
+        int rejectedRailSections     = 0;
 
+        // — SpeedBoost: solo en oportunidades de pendiente/gap —
         for (int i = 0; i < sections.Count; i++)
         {
             TrackSectionDefinition section = sections[i];
@@ -229,18 +251,12 @@ public sealed class PowerUpGenerator : MonoBehaviour
                 continue;
             }
 
-            if (!CanUseGameplaySection(section, usableStart, usableEnd))
-            {
-                continue;
-            }
+            if (!CanUseGameplaySection(section, usableStart, usableEnd)) continue;
 
             bool isSlopeOpportunity = enableSlopeOpportunities && IsSlopeUpSection(section);
-            bool isGapOpportunity = enableGapOpportunities && IsImmediatePreGapSection(section, sections, i);
+            bool isGapOpportunity   = enableGapOpportunities   && IsImmediatePreGapSection(section, sections, i);
 
-            if (!isSlopeOpportunity && !isGapOpportunity)
-            {
-                continue;
-            }
+            if (!isSlopeOpportunity && !isGapOpportunity) continue;
 
             PowerUpOpportunityKind opportunityKind = isGapOpportunity
                 ? PowerUpOpportunityKind.BeforeGap
@@ -248,258 +264,377 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
             float opportunityDistance = ResolveOpportunityDistance(section, opportunityKind);
 
-            if (opportunityDistance < usableStart || opportunityDistance > usableEnd)
-            {
-                continue;
-            }
-
-            if (opportunityDistance - lastAcceptedPowerUpDistance < minDistanceBetweenPowerUps)
-            {
-                continue;
-            }
-
-            if (opportunityKind == PowerUpOpportunityKind.SlopeStart)
-            {
-                slopeOpportunities++;
-            }
-            else
-            {
-                gapOpportunities++;
-            }
+            if (opportunityDistance < usableStart || opportunityDistance > usableEnd) continue;
+            if (opportunityDistance - lastAcceptedSpeedBoostDistance < minDistanceBetweenSpeedBoosts) continue;
 
             float opportunityChance = opportunityKind == PowerUpOpportunityKind.BeforeGap
                 ? gapOpportunityChance
                 : slopeOpportunityChance;
 
-            if (random.NextDouble() > opportunityChance)
+            if (random.NextDouble() > opportunityChance) continue;
+            if (speedBoostZonePrefab == null) continue;
+
+            float startDistance = Mathf.Max(usableStart, section.StartDistance - speedBoostLeadInDistance);
+            float endDistance   = ResolveSpeedBoostEndDistance(section, opportunityKind, usableEnd);
+            int   createdSegs   = PlaceSpeedBoostPath(map, startDistance, endDistance, opportunityKind);
+
+            if (createdSegs > 0)
             {
-                continue;
-            }
-
-            PowerUpSpawnType selectedType = ResolvePowerUpType(random);
-
-            if (selectedType == PowerUpSpawnType.None)
-            {
-                continue;
-            }
-
-            if (selectedType == PowerUpSpawnType.SpeedBoost)
-            {
-                float startDistance = Mathf.Max(usableStart, section.StartDistance - speedBoostLeadInDistance);
-                float endDistance = ResolveSpeedBoostEndDistance(section, opportunityKind, usableEnd);
-
-                int createdSegments = PlaceSpeedBoostPath(map, startDistance, endDistance, opportunityKind);
-
-                if (createdSegments > 0)
-                {
-                    speedBoostPathsPlaced++;
-                    speedBoostSegmentsPlaced += createdSegments;
-                    acceptedOpportunities++;
-                    lastAcceptedPowerUpDistance = opportunityDistance;
-                }
-
-                continue;
-            }
-
-            if (selectedType == PowerUpSpawnType.JumpPad)
-            {
-                float jumpDistance = ResolveJumpPadDistance(section, opportunityKind);
-                jumpDistance = Mathf.Clamp(jumpDistance, usableStart, usableEnd);
-
-                PlaceJumpPad(map, jumpDistance, opportunityKind);
-
-                jumpPadsPlaced++;
-                acceptedOpportunities++;
-                lastAcceptedPowerUpDistance = opportunityDistance;
+                speedBoostPathsPlaced++;
+                speedBoostSegmentsPlaced         += createdSegs;
+                lastAcceptedSpeedBoostDistance    = opportunityDistance;
             }
         }
+
+        // — Coleccionables: distribuidos a lo largo de toda la pista —
+        collectiblesPlaced = GenerateCollectibles(
+            map, random, sharedReservationMap, sections, levelIndex, progressionT, usableStart, usableEnd);
 
         if (enableDebugLogs)
         {
             Debug.Log(
                 $"[POWER UPS] Generación gameplay completa.\n" +
-                $"  Sections total           : {sections.Count}\n" +
-                $"  Rail sections rejected   : {rejectedRailSections}\n" +
-                $"  Slope opportunities      : {slopeOpportunities}\n" +
-                $"  Gap opportunities        : {gapOpportunities}\n" +
-                $"  Accepted opportunities   : {acceptedOpportunities}\n" +
-                $"  Jump Pads placed         : {jumpPadsPlaced}\n" +
-                $"  Speed Boost paths placed : {speedBoostPathsPlaced}\n" +
-                $"  Speed Boost segments     : {speedBoostSegmentsPlaced}\n" +
-                $"  Usable range             : {usableStart:F1} - {usableEnd:F1}",
+                $"  Sections total              : {sections.Count}\n" +
+                $"  Rail sections rejected      : {rejectedRailSections}\n" +
+                $"  Speed Boost paths placed    : {speedBoostPathsPlaced}\n" +
+                $"  Speed Boost segments        : {speedBoostSegmentsPlaced}\n" +
+                $"  Collectibles placed         : {collectiblesPlaced}\n" +
+                $"  Usable range                : {usableStart:F1}m – {usableEnd:F1}m\n" +
+                $"  Level index / progressionT  : {levelIndex} / {progressionT:F2}",
                 this);
         }
     }
 
+    #endregion
+
+    #region Collectible Generation
+
     /// <summary>
-    /// Decide si la oportunidad genera JumpPad o SpeedBoost, garantizando exclusión entre ambos.
-    /// Si ambos prefabs existen, usa una probabilidad 50/50 por defecto.
+    /// Distribuye power-ups coleccionables a lo largo del track.
+    ///
+    /// La cantidad total se elige aleatoriamente entre <see cref="minCollectiblesPerLevel"/>
+    /// y <see cref="maxCollectiblesPerLevel"/>. Las posiciones se distribuyen uniformemente
+    /// con variación aleatoria y se validan contra el mapa de reservas para no solapar
+    /// con monedas ni obstáculos.
     /// </summary>
-    private PowerUpSpawnType ResolvePowerUpType(System.Random random)
+    private int GenerateCollectibles(
+        TrackRuntimeMap                      map,
+        System.Random                        random,
+        TrackSpawnReservationMap             reservationMap,
+        IReadOnlyList<TrackSectionDefinition> sections,
+        int                                  levelIndex,
+        float                                progressionT,
+        float                                usableStart,
+        float                                usableEnd)
     {
-        bool canSpawnJump = jumpPadPrefab != null;
-        bool canSpawnSpeed = speedBoostZonePrefab != null;
+        if (collectiblePickupPrefab == null) return 0;
 
-        if (!canSpawnJump && !canSpawnSpeed)
+        List<CollectiblePowerUpData> eligible = GetEligibleCollectibles(levelIndex, progressionT);
+        if (eligible.Count == 0) return 0;
+
+        // Determinar cuántos colocar este nivel.
+        int clampedMax    = Mathf.Max(minCollectiblesPerLevel, maxCollectiblesPerLevel);
+        int targetCount   = random.Next(minCollectiblesPerLevel, clampedMax + 1);
+        if (targetCount <= 0) return 0;
+
+        float range = usableEnd - usableStart;
+        if (range <= 0f) return 0;
+
+        // Distribuir los slots uniformemente y con variación aleatoria.
+        // Cada slot ocupa range/targetCount metros; dentro del slot se escoge una posición al azar.
+        float slotSize    = range / targetCount;
+        int   placed      = 0;
+        float lastPlaced  = usableStart - minDistanceBetweenCollectibles; // permite colocar desde el inicio
+
+        for (int i = 0; i < targetCount; i++)
         {
-            return PowerUpSpawnType.None;
+            float slotStart = usableStart + slotSize * i;
+            float slotEnd   = slotStart + slotSize;
+
+            // Posición candidata aleatoria dentro del slot.
+            float candidateDistance = slotStart + (float)random.NextDouble() * (slotEnd - slotStart);
+            candidateDistance       = Mathf.Clamp(candidateDistance, usableStart, usableEnd);
+
+            // Respetar distancia mínima entre coleccionables.
+            if (candidateDistance - lastPlaced < minDistanceBetweenCollectibles) continue;
+
+            // Seleccionar tipo elegible ponderado.
+            CollectiblePowerUpData selectedData = PickWeightedCollectible(eligible, random, progressionT);
+            if (selectedData == null) continue;
+
+            // Evaluar probabilidad individual del tipo seleccionado.
+            if (random.NextDouble() > selectedData.EvaluateSpawnChance(progressionT)) continue;
+
+            // Verificar sección sólida.
+            if (!IsValidSolidDistanceForCollectible(sections, candidateDistance)) continue;
+
+            // Intentar reservar espacio.
+            float acceptedDistance = TryReserveCollectibleSlot(
+                reservationMap, selectedData, candidateDistance,
+                usableStart, usableEnd, random, sections);
+
+            if (acceptedDistance < 0f) continue;
+
+            PlaceCollectible(map, acceptedDistance, selectedData);
+            lastPlaced = acceptedDistance;
+            placed++;
         }
 
-        if (canSpawnJump && !canSpawnSpeed)
+        return placed;
+    }
+
+    /// <summary>
+    /// Intenta reservar un slot para el coleccionable, probando posiciones alternativas si la
+    /// principal está ocupada. Devuelve la distancia aceptada, o -1 si no fue posible.
+    /// </summary>
+    private float TryReserveCollectibleSlot(
+        TrackSpawnReservationMap reservationMap,
+        CollectiblePowerUpData   data,
+        float                    preferredDistance,
+        float                    usableStart,
+        float                    usableEnd,
+        System.Random            random,
+        IReadOnlyList<TrackSectionDefinition> sections)
+    {
+        // Sin mapa de reservas: colocar sin verificar.
+        if (reservationMap == null)
+            return preferredDistance;
+
+        float[] candidates =
         {
-            return PowerUpSpawnType.JumpPad;
+            preferredDistance,
+            preferredDistance + 1.5f,
+            preferredDistance - 1.5f,
+            preferredDistance + 3f,
+        };
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            float dist = candidates[i];
+
+            if (dist < usableStart || dist > usableEnd) continue;
+            if (!IsValidSolidDistanceForCollectible(sections, dist)) continue;
+
+            if (reservationMap.TryReserve(
+                    dist,
+                    0f,
+                    data.ReservationLength,
+                    data.ReservationWidth,
+                    TrackSpawnPriority.Low))
+            {
+                return dist;
+            }
         }
 
-        if (!canSpawnJump && canSpawnSpeed)
+        return -1f;
+    }
+
+    /// <summary>
+    /// Instancia el prefab de coleccionable en la pista y lo inicializa con los datos dados.
+    ///
+    /// Después de instanciar alinea el borde inferior del collider con la superficie de la pista.
+    /// Esto resuelve el problema del pivot: una esfera tiene su pivot en el centro,
+    /// por lo que sin alineación quedaría enterrada la mitad en el suelo.
+    /// </summary>
+    private void PlaceCollectible(TrackRuntimeMap map, float distance, CollectiblePowerUpData data)
+    {
+        TrackSample sample = map.PathSampler.SampleAtDistance(distance);
+
+        // Posición inicial sobre la superficie (con offset de seguridad).
+        Vector3    position = sample.Position + Vector3.up * data.SurfaceOffset;
+        Quaternion rotation = Quaternion.LookRotation(ResolveSafeForward(sample.Forward), Vector3.up);
+
+        GameObject instance = Instantiate(collectiblePickupPrefab, position, rotation, generatedRoot);
+        instance.name = $"Collectible_{data.Type}_{distance:F0}m";
+
+        // Alinear la base del collider con la superficie para cualquier forma de pivot.
+        AlignCollectibleBottomToSurface(instance, sample.Position.y + data.SurfaceOffset);
+
+        CollectiblePowerUp pickup = instance.GetComponent<CollectiblePowerUp>();
+        pickup?.Initialize(data);
+    }
+
+    /// <summary>
+    /// Eleva el objeto hasta que el punto más bajo de su collider quede en <paramref name="targetSurfaceY"/>.
+    ///
+    /// Necesario porque los prefabs pueden tener el pivot en el centro (e.g. una esfera)
+    /// en lugar de en la base. Sin este ajuste, la mitad del objeto quedaría bajo el suelo.
+    /// </summary>
+    private static void AlignCollectibleBottomToSurface(GameObject instance, float targetSurfaceY)
+    {
+        Collider col = instance.GetComponentInChildren<Collider>(true);
+        if (col == null) return;
+
+        float bottomY = col.bounds.min.y;
+        float delta   = targetSurfaceY - bottomY;
+
+        if (Mathf.Abs(delta) > 0.001f)
+            instance.transform.position += new Vector3(0f, delta, 0f);
+    }
+
+    /// <summary>
+    /// Filtra y devuelve los coleccionables elegibles para el nivel y progresión actuales.
+    /// </summary>
+    private List<CollectiblePowerUpData> GetEligibleCollectibles(int levelIndex, float progressionT)
+    {
+        var eligible = new List<CollectiblePowerUpData>();
+
+        if (collectiblePowerUps == null) return eligible;
+
+        for (int i = 0; i < collectiblePowerUps.Length; i++)
         {
-            return PowerUpSpawnType.SpeedBoost;
+            CollectiblePowerUpData data = collectiblePowerUps[i];
+            if (data == null) continue;
+            if (!data.IsEligibleForLevel(levelIndex)) continue;
+            if (data.EvaluateSpawnChance(progressionT) <= 0f) continue;
+            eligible.Add(data);
         }
 
-        return random.NextDouble() < speedBoostSelectionChance
-            ? PowerUpSpawnType.SpeedBoost
-            : PowerUpSpawnType.JumpPad;
+        return eligible;
+    }
+
+    /// <summary>
+    /// Selecciona un coleccionable ponderado por spawnWeight × spawnChance del nivel actual.
+    /// </summary>
+    private static CollectiblePowerUpData PickWeightedCollectible(
+        List<CollectiblePowerUpData> eligible,
+        System.Random                random,
+        float                        progressionT)
+    {
+        if (eligible.Count == 0) return null;
+        if (eligible.Count == 1) return eligible[0];
+
+        float totalWeight = 0f;
+        for (int i = 0; i < eligible.Count; i++)
+            totalWeight += eligible[i].SpawnWeight * eligible[i].EvaluateSpawnChance(progressionT);
+
+        if (totalWeight <= 0f) return null;
+
+        float roll    = (float)random.NextDouble() * totalWeight;
+        float current = 0f;
+
+        for (int i = 0; i < eligible.Count; i++)
+        {
+            current += eligible[i].SpawnWeight * eligible[i].EvaluateSpawnChance(progressionT);
+            if (roll <= current) return eligible[i];
+        }
+
+        return eligible[eligible.Count - 1];
+    }
+
+    /// <summary>
+    /// Indica si la distancia dada cae sobre una sección sólida válida para coleccionables.
+    /// Rechaza rieles, gaps y cualquier sección sin superficie.
+    /// </summary>
+    private static bool IsValidSolidDistanceForCollectible(
+        IReadOnlyList<TrackSectionDefinition> sections,
+        float distance)
+    {
+        for (int i = 0; i < sections.Count; i++)
+        {
+            TrackSectionDefinition section = sections[i];
+            if (distance < section.StartDistance || distance > section.EndDistance) continue;
+
+            return section.HasSurface
+                && section.StructureType == TrackStructureType.SolidTrack;
+        }
+
+        return false;
     }
 
     #endregion
 
     #region Debug Generation
 
-    /// <summary>
-    /// Genera power-ups ignorando las oportunidades específicas.
-    /// Aun en debug evita rieles y gaps para no validar un comportamiento inválido.
-    /// </summary>
-    private void GenerateDebugPowerUps(TrackRuntimeMap map, int seed)
+    private void GenerateDebugPowerUps(
+        TrackRuntimeMap          map,
+        int                      seed,
+        TrackSpawnReservationMap sharedReservationMap,
+        int                      levelIndex,
+        float                    progressionT)
     {
         System.Random random = new System.Random(seed + SeedOffset);
         IReadOnlyList<TrackSectionDefinition> sections = map.Sections;
 
-        int placed = 0;
-        int rejectedRailSections = 0;
+        // Debug SpeedBoosts
+        int   placed      = 0;
         float lastDistance = 0f;
 
         for (int i = 0; i < sections.Count; i++)
         {
-            if (placed >= debugMaxPowerUps)
-            {
-                break;
-            }
+            if (placed >= debugMaxSpeedBoosts) break;
 
             TrackSectionDefinition section = sections[i];
-
-            if (section.StructureType == TrackStructureType.RailTrack)
-            {
-                rejectedRailSections++;
-                continue;
-            }
-
-            if (!CanUseDebugSection(section))
-            {
-                continue;
-            }
+            if (section.StructureType == TrackStructureType.RailTrack) continue;
+            if (!CanUseDebugSection(section)) continue;
 
             float distance = GetSectionCenterDistance(section);
+            if (distance - lastDistance < debugMinDistanceBetweenSpeedBoosts) continue;
 
-            if (distance - lastDistance < debugMinDistanceBetweenPowerUps)
-            {
-                continue;
-            }
-
-            if (jumpPadPrefab != null && (placed % 2 == 0 || speedBoostZonePrefab == null))
-            {
-                PlaceJumpPad(map, distance, PowerUpOpportunityKind.Debug);
-            }
-            else if (speedBoostZonePrefab != null)
+            if (speedBoostZonePrefab != null)
             {
                 PlaceSpeedBoostPath(map, section.StartDistance, section.EndDistance, PowerUpOpportunityKind.Debug);
+                placed++;
             }
 
-            placed++;
             lastDistance = distance;
         }
 
+        // Debug Collectibles: a intervalo mínimo a lo largo de toda la pista
+        float totalDistance = map.PathSampler.TotalDistance;
+        int   collectiblesPlaced = GenerateCollectibles(
+            map, random, sharedReservationMap, sections, levelIndex, 1f, 0f, totalDistance);
+
         Debug.LogWarning(
-            $"[POWER UPS DEBUG] Debug Generate Anywhere está activo. " +
-            $"Se generaron {placed} power-ups solo en SolidTrack. " +
-            $"Rieles rechazados: {rejectedRailSections}.",
+            $"[POWER UPS DEBUG] Debug Generate Anywhere activo. " +
+            $"SpeedBoosts: {placed} | Collectibles: {collectiblesPlaced}.",
             this);
     }
 
     #endregion
 
-    #region Placement
+    #region Speed Boost Placement
 
-    /// <summary>
-    /// Instancia un JumpPad puntual sobre la pista.
-    /// </summary>
-    private void PlaceJumpPad(
-        TrackRuntimeMap map,
-        float distance,
-        PowerUpOpportunityKind opportunityKind)
-    {
-        TrackSample sample = map.PathSampler.SampleAtDistance(distance);
-
-        Vector3 position = sample.Position + Vector3.up * jumpPadSurfaceOffset;
-        Quaternion rotation = Quaternion.LookRotation(ResolveSafeForward(sample.Forward), Vector3.up);
-
-        GameObject instance = Instantiate(jumpPadPrefab, position, rotation, generatedRoot);
-        instance.name = $"JumpPad_{opportunityKind}_{distance:F0}m";
-    }
-
-    /// <summary>
-    /// Crea una ruta de SpeedBoost segmentada para seguir curvatura, pendiente y rampas.
-    /// </summary>
     private int PlaceSpeedBoostPath(
-        TrackRuntimeMap map,
-        float startDistance,
-        float endDistance,
+        TrackRuntimeMap        map,
+        float                  startDistance,
+        float                  endDistance,
         PowerUpOpportunityKind opportunityKind)
     {
-        startDistance = Mathf.Max(0f, startDistance);
-        endDistance = Mathf.Max(startDistance, endDistance);
+        if (speedBoostZonePrefab == null) return 0;
 
+        startDistance = Mathf.Max(0f, startDistance);
+        endDistance   = Mathf.Max(startDistance, endDistance);
         float totalLength = endDistance - startDistance;
 
-        if (totalLength <= MinimumValidSectionLength)
-        {
-            return 0;
-        }
+        if (totalLength <= MinimumValidSectionLength) return 0;
 
-        GameObject pathRootObject = new GameObject($"SpeedBoostPath_{opportunityKind}_{startDistance:F0}m_{endDistance:F0}m");
+        GameObject pathRootObject = new GameObject(
+            $"SpeedBoostPath_{opportunityKind}_{startDistance:F0}m_{endDistance:F0}m");
         pathRootObject.transform.SetParent(generatedRoot);
         pathRootObject.transform.localPosition = Vector3.zero;
         pathRootObject.transform.localRotation = Quaternion.identity;
-        pathRootObject.transform.localScale = Vector3.one;
-
+        pathRootObject.transform.localScale    = Vector3.one;
         Transform pathRoot = pathRootObject.transform;
 
-        int segmentCount = Mathf.Max(1, Mathf.CeilToInt(totalLength / speedBoostSegmentLength));
+        int   segmentCount          = Mathf.Max(1, Mathf.CeilToInt(totalLength / speedBoostSegmentLength));
         float resolvedSegmentLength = totalLength / segmentCount;
-        int createdSegments = 0;
+        int   createdSegments       = 0;
 
         for (int i = 0; i < segmentCount; i++)
         {
-            float segmentStartDistance = startDistance + resolvedSegmentLength * i;
-            float segmentEndDistance = i == segmentCount - 1
-                ? endDistance
-                : segmentStartDistance + resolvedSegmentLength;
+            float segStart = startDistance + resolvedSegmentLength * i;
+            float segEnd   = i == segmentCount - 1 ? endDistance : segStart + resolvedSegmentLength;
 
-            if (CreateSpeedBoostSegment(map, segmentStartDistance, segmentEndDistance, pathRoot, i))
-            {
+            if (CreateSpeedBoostSegment(map, segStart, segEnd, pathRoot, i))
                 createdSegments++;
-            }
         }
 
         if (createdSegments == 0)
         {
 #if UNITY_EDITOR
-            if (!Application.isPlaying)
-            {
-                DestroyImmediate(pathRootObject);
-            }
-            else
-            {
-                Destroy(pathRootObject);
-            }
+            if (!Application.isPlaying) DestroyImmediate(pathRootObject);
+            else Destroy(pathRootObject);
 #else
             Destroy(pathRootObject);
 #endif
@@ -508,31 +643,25 @@ public sealed class PowerUpGenerator : MonoBehaviour
         return createdSegments;
     }
 
-    /// <summary>
-    /// Instancia un segmento individual de SpeedBoost entre dos muestras del PathSampler.
-    /// </summary>
     private bool CreateSpeedBoostSegment(
         TrackRuntimeMap map,
-        float startDistance,
-        float endDistance,
-        Transform parent,
-        int segmentIndex)
+        float           startDistance,
+        float           endDistance,
+        Transform       parent,
+        int             segmentIndex)
     {
         TrackSample startSample = map.PathSampler.SampleAtDistance(startDistance);
-        TrackSample endSample = map.PathSampler.SampleAtDistance(endDistance);
+        TrackSample endSample   = map.PathSampler.SampleAtDistance(endDistance);
 
-        Vector3 startPosition = startSample.Position + Vector3.up * speedBoostSurfaceOffset;
-        Vector3 endPosition = endSample.Position + Vector3.up * speedBoostSurfaceOffset;
+        Vector3 startPos = startSample.Position + Vector3.up * speedBoostSurfaceOffset;
+        Vector3 endPos   = endSample.Position   + Vector3.up * speedBoostSurfaceOffset;
 
-        Vector3 segment = endPosition - startPosition;
-        float segmentLength = segment.magnitude;
+        Vector3 segment       = endPos - startPos;
+        float   segmentLength = segment.magnitude;
 
-        if (segmentLength <= MinimumValidSectionLength)
-        {
-            return false;
-        }
+        if (segmentLength <= MinimumValidSectionLength) return false;
 
-        Vector3 position = (startPosition + endPosition) * 0.5f;
+        Vector3    position = (startPos + endPos) * 0.5f;
         Quaternion rotation = Quaternion.LookRotation(segment.normalized, Vector3.up);
 
         GameObject instance = Instantiate(speedBoostZonePrefab, position, rotation, parent);
@@ -549,9 +678,6 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
     #region Filtering
 
-    /// <summary>
-    /// Valida si el sistema tiene los datos mínimos necesarios para generar.
-    /// </summary>
     private bool CanGenerate(TrackRuntimeMap map)
     {
         if (map == null)
@@ -572,109 +698,68 @@ public sealed class PowerUpGenerator : MonoBehaviour
             return false;
         }
 
-        if (jumpPadPrefab == null && speedBoostZonePrefab == null)
+        bool hasSpeedBoost   = speedBoostZonePrefab    != null;
+        bool hasCollectibles = collectiblePickupPrefab  != null
+            && collectiblePowerUps != null
+            && collectiblePowerUps.Length > 0;
+
+        if (!hasSpeedBoost && !hasCollectibles)
         {
-            Debug.LogWarning("[POWER UPS] No hay prefabs asignados.", this);
+            Debug.LogWarning(
+                "[POWER UPS] Ni speedBoostZonePrefab ni collectiblePickupPrefab están asignados.", this);
             return false;
         }
 
         return true;
     }
 
-    /// <summary>
-    /// Valida si una sección puede participar en reglas de gameplay.
-    /// Los power-ups solo pueden generarse sobre pista sólida, nunca sobre rieles ni gaps.
-    /// </summary>
     private static bool CanUseGameplaySection(
         TrackSectionDefinition section,
         float usableStart,
         float usableEnd)
     {
-        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength)
-        {
-            return false;
-        }
-
-        if (section.StartDistance < usableStart || section.EndDistance > usableEnd)
-        {
-            return false;
-        }
-
-        if (!section.HasSurface)
-        {
-            return false;
-        }
-
+        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength) return false;
+        if (section.StartDistance < usableStart || section.EndDistance > usableEnd) return false;
+        if (!section.HasSurface) return false;
         return section.StructureType == TrackStructureType.SolidTrack;
     }
 
-    /// <summary>
-    /// Valida una sección para modo debug.
-    /// Incluso en debug evita rieles y gaps para probar solo comportamiento real de pista sólida.
-    /// </summary>
     private static bool CanUseDebugSection(TrackSectionDefinition section)
     {
-        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength)
-        {
-            return false;
-        }
-
-        if (!section.HasSurface)
-        {
-            return false;
-        }
-
+        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength) return false;
+        if (!section.HasSurface) return false;
         return section.StructureType == TrackStructureType.SolidTrack;
     }
 
-    /// <summary>
-    /// Indica si una sección es una pendiente ascendente válida para power-ups.
-    /// Aunque un riel suba, no se considera válido.
-    /// </summary>
     private static bool IsSlopeUpSection(TrackSectionDefinition section)
     {
-        return section.FeatureType == TrackFeatureType.SlopeUp
+        return section.FeatureType   == TrackFeatureType.SlopeUp
             && section.HasSurface
             && section.StructureType == TrackStructureType.SolidTrack;
     }
 
-    /// <summary>
-    /// Indica si la sección actual es inmediatamente anterior a un gap.
-    /// No permite rieles como sección válida previa al gap.
-    /// </summary>
     private static bool IsImmediatePreGapSection(
-        TrackSectionDefinition section,
+        TrackSectionDefinition               section,
         IReadOnlyList<TrackSectionDefinition> sections,
-        int index)
+        int                                  sectionIndex)
     {
-        if (!section.HasSurface)
-        {
-            return false;
-        }
+        if (section.StructureType != TrackStructureType.SolidTrack) return false;
+        if (!section.HasSurface) return false;
 
-        if (section.StructureType != TrackStructureType.SolidTrack)
-        {
-            return false;
-        }
+        int nextIndex = sectionIndex + 1;
+        if (nextIndex >= sections.Count) return false;
 
-        if (index + 1 >= sections.Count)
-        {
-            return false;
-        }
+        TrackSectionDefinition nextSection = sections[nextIndex];
 
-        TrackSectionDefinition nextSection = sections[index + 1];
+        bool nextIsGap = !nextSection.HasSurface
+            || nextSection.StructureType == TrackStructureType.RailTrack;
 
-        return nextSection.StructureType == TrackStructureType.Gap
-            || nextSection.FeatureType == TrackFeatureType.Gap;
+        if (!nextIsGap) return false;
+
+        float gap = nextSection.StartDistance - section.EndDistance;
+        return gap <= GapEdgeSafetyOffset;
     }
 
-    #endregion
-
-    #region Distance Resolution
-
-    /// <summary>
-    /// Resuelve la distancia lógica de la oportunidad.
-    /// </summary>
     private static float ResolveOpportunityDistance(
         TrackSectionDefinition section,
         PowerUpOpportunityKind opportunityKind)
@@ -684,40 +769,17 @@ public sealed class PowerUpGenerator : MonoBehaviour
             : section.StartDistance;
     }
 
-    /// <summary>
-    /// Resuelve hasta dónde llega el SpeedBoost según el tipo de oportunidad.
-    /// </summary>
-    private static float ResolveSpeedBoostEndDistance(
+    private float ResolveSpeedBoostEndDistance(
         TrackSectionDefinition section,
         PowerUpOpportunityKind opportunityKind,
-        float usableEnd)
+        float                  usableEnd)
     {
         if (opportunityKind == PowerUpOpportunityKind.BeforeGap)
-        {
-            return Mathf.Min(usableEnd, section.EndDistance - GapEdgeSafetyOffset);
-        }
+            return Mathf.Min(section.EndDistance, usableEnd);
 
-        return Mathf.Min(usableEnd, section.EndDistance);
+        return Mathf.Min(section.EndDistance, usableEnd);
     }
 
-    /// <summary>
-    /// Resuelve la distancia donde debe colocarse el JumpPad.
-    /// </summary>
-    private float ResolveJumpPadDistance(
-        TrackSectionDefinition section,
-        PowerUpOpportunityKind opportunityKind)
-    {
-        if (opportunityKind == PowerUpOpportunityKind.BeforeGap)
-        {
-            return Mathf.Max(section.StartDistance, section.EndDistance - jumpPadBeforeGapOffset);
-        }
-
-        return Mathf.Min(section.EndDistance, section.StartDistance + jumpPadSlopeStartForwardOffset);
-    }
-
-    /// <summary>
-    /// Calcula la distancia central de una sección.
-    /// </summary>
     private static float GetSectionCenterDistance(TrackSectionDefinition section)
     {
         return (section.StartDistance + section.EndDistance) * 0.5f;
@@ -727,67 +789,51 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
     #region Helpers
 
-    /// <summary>
-    /// Crea un nuevo contenedor raíz para los power-ups generados.
-    /// </summary>
     private Transform CreateRoot()
     {
         GameObject root = new GameObject(RootName);
         root.transform.SetParent(transform);
         root.transform.localPosition = Vector3.zero;
         root.transform.localRotation = Quaternion.identity;
-        root.transform.localScale = Vector3.one;
-
+        root.transform.localScale    = Vector3.one;
         return root.transform;
     }
 
-    /// <summary>
-    /// Resuelve un forward seguro para rotaciones.
-    /// </summary>
     private static Vector3 ResolveSafeForward(Vector3 forward)
     {
-        return forward.sqrMagnitude <= 0.0001f
-            ? Vector3.forward
-            : forward.normalized;
+        return forward.sqrMagnitude <= 0.0001f ? Vector3.forward : forward.normalized;
     }
 
     private void OnValidate()
     {
-        slopeOpportunityChance = Mathf.Clamp01(slopeOpportunityChance);
-        gapOpportunityChance = Mathf.Clamp01(gapOpportunityChance);
-        speedBoostSelectionChance = Mathf.Clamp01(speedBoostSelectionChance);
+        slopeOpportunityChance  = Mathf.Clamp01(slopeOpportunityChance);
+        gapOpportunityChance    = Mathf.Clamp01(gapOpportunityChance);
 
-        minDistanceBetweenPowerUps = Mathf.Max(0f, minDistanceBetweenPowerUps);
-
-        jumpPadSurfaceOffset = Mathf.Max(0f, jumpPadSurfaceOffset);
-        jumpPadSlopeStartForwardOffset = Mathf.Max(0f, jumpPadSlopeStartForwardOffset);
-        jumpPadBeforeGapOffset = Mathf.Max(0f, jumpPadBeforeGapOffset);
-
-        speedBoostSurfaceOffset = Mathf.Max(0f, speedBoostSurfaceOffset);
-        speedBoostLeadInDistance = Mathf.Max(0f, speedBoostLeadInDistance);
-        speedBoostSegmentLength = Mathf.Max(0.25f, speedBoostSegmentLength);
+        minDistanceBetweenSpeedBoosts    = Mathf.Max(0f, minDistanceBetweenSpeedBoosts);
+        speedBoostSurfaceOffset          = Mathf.Max(0f, speedBoostSurfaceOffset);
+        speedBoostLeadInDistance         = Mathf.Max(0f, speedBoostLeadInDistance);
+        speedBoostSegmentLength          = Mathf.Max(0.25f, speedBoostSegmentLength);
         minimumSpeedBoostSegmentVisualLength = Mathf.Max(0.1f, minimumSpeedBoostSegmentVisualLength);
 
-        debugMaxPowerUps = Mathf.Max(1, debugMaxPowerUps);
-        debugMinDistanceBetweenPowerUps = Mathf.Max(0f, debugMinDistanceBetweenPowerUps);
+
+
+        minCollectiblesPerLevel        = Mathf.Max(0, minCollectiblesPerLevel);
+        maxCollectiblesPerLevel        = Mathf.Max(minCollectiblesPerLevel, maxCollectiblesPerLevel);
+        minDistanceBetweenCollectibles = Mathf.Max(5f, minDistanceBetweenCollectibles);
+
+        debugMaxSpeedBoosts              = Mathf.Max(1, debugMaxSpeedBoosts);
+        debugMinDistanceBetweenSpeedBoosts = Mathf.Max(0f, debugMinDistanceBetweenSpeedBoosts);
     }
 
     #endregion
 
     #region Nested Types
 
-    private enum PowerUpSpawnType
-    {
-        None = 0,
-        JumpPad = 1,
-        SpeedBoost = 2
-    }
-
     private enum PowerUpOpportunityKind
     {
-        Debug = 0,
+        Debug      = 0,
         SlopeStart = 1,
-        BeforeGap = 2
+        BeforeGap  = 2,
     }
 
     #endregion

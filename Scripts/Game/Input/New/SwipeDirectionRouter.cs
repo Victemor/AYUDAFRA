@@ -1,19 +1,9 @@
 using UnityEngine;
 
 /// <summary>
-/// Permite que los swipes redireccionen parcialmente
-/// la cara principal de la pelota.
-///
-/// IMPORTANTE:
-/// - NO reemplaza ninguna lógica existente.
-/// - NO modifica el joystick.
-/// - NO altera acumuladores.
-/// - NO toca el steering.
-/// - SOLO agrega una pequeña redirección por swipe.
-///
-/// El sistema actual seguirá aplicando impulso,
-/// steering y movimiento exactamente igual,
-/// pero usando un forward ligeramente ajustado.
+/// Redirecciona parcialmente la cara principal de la pelota usando swipes.
+/// Permite rotación hacia atrás solo cuando la bola está detenida,
+/// evitando que los gestos de freno cambien la dirección mientras hay velocidad.
 /// </summary>
 public sealed class SwipeDirectionRouter : MonoBehaviour
 {
@@ -30,33 +20,40 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
     private SphereRotationController rotationController;
 
     [SerializeField]
-    [Tooltip("Motor de movimiento opcional para aplicar un micro impulso.")]
+    [Tooltip("Motor de movimiento usado para consultar velocidad y aplicar micro impulso opcional.")]
     private BallMovementMotor movementMotor;
 
     [SerializeField]
-    [Tooltip("Cámara usada para convertir la dirección del swipe " +
-             "de pantalla a mundo.")]
+    [Tooltip("Cámara usada para convertir la dirección del swipe de pantalla a mundo.")]
     private Camera targetCamera;
 
     [Header("Configuración")]
 
     [SerializeField]
-    [Tooltip("Qué tanto influye el swipe sobre la dirección actual. " +
-             "0 = no gira. 1 = snap completo.")]
+    [Tooltip("Qué tanto influye el swipe sobre la dirección actual. 0 = no gira. 1 = snap completo.")]
     [Range(0f, 1f)]
     private float swipeRotationInfluence = 0.15f;
+
+    [SerializeField]
+    [Tooltip("Influencia específica para swipes hacia atrás cuando la bola está detenida.")]
+    [Range(0f, 1f)]
+    private float stoppedBackwardSwipeRotationInfluence = 0.65f;
+
+    [SerializeField]
+    [Tooltip("Velocidad máxima para considerar que la bola está detenida y permitir rotación hacia atrás.")]
+    private float stoppedSpeedThreshold = 0.08f;
 
     [SerializeField]
     [Tooltip("Si está activo, los swipes forward también pueden redireccionar.")]
     private bool rotateForwardSwipes = true;
 
     [SerializeField]
-    [Tooltip("Si está activo, los swipes backward NO rotan.")]
-    private bool ignoreBackwardSwipes = true;
+    [Tooltip("Si está activo, los swipes hacia atrás pueden rotar únicamente cuando la bola está detenida.")]
+    private bool allowBackwardRotationWhenStopped = true;
 
     [SerializeField]
-    [Tooltip("Si está activo, los swipes diagonales backward NO rotan.")]
-    private bool ignoreBackwardDiagonals = true;
+    [Tooltip("Si está activo, las diagonales hacia atrás pueden rotar únicamente cuando la bola está detenida.")]
+    private bool allowBackwardDiagonalRotationWhenStopped = true;
 
     [Header("Micro impulso")]
 
@@ -65,7 +62,7 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
     private bool applyMicroKick = true;
 
     [SerializeField]
-    [Tooltip("Pequeño impulso aplicado al redireccionar con swipe.")]
+    [Tooltip("Pequeño impulso aplicado al redireccionar con swipe. No se aplica en swipes hacia atrás.")]
     private float swipeDirectionKickImpulse = 0.35f;
 
     [Header("Debug")]
@@ -80,9 +77,9 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
 
     private void Reset()
     {
-        unifiedInput       = FindFirstObjectByType<UnifiedBallInput>();
+        unifiedInput = FindFirstObjectByType<UnifiedBallInput>();
         rotationController = GetComponent<SphereRotationController>();
-        movementMotor      = GetComponent<BallMovementMotor>();
+        movementMotor = GetComponent<BallMovementMotor>();
 
         if (Camera.main != null)
         {
@@ -129,17 +126,22 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
         }
     }
 
+    private void OnValidate()
+    {
+        stoppedSpeedThreshold = Mathf.Max(0f, stoppedSpeedThreshold);
+        swipeDirectionKickImpulse = Mathf.Max(0f, swipeDirectionKickImpulse);
+    }
+
     #endregion
 
     #region Private
 
     /// <summary>
-    /// Procesa el swipe y redirecciona parcialmente
-    /// la dirección frontal actual.
+    /// Procesa el swipe y redirecciona parcialmente la dirección frontal actual.
     /// </summary>
     private void HandleSwipe(SwipeData swipe)
     {
-        if (!ShouldRotateForSwipe(swipe.Intent))
+        if (!TryGetRotationInfluence(swipe.Intent, out float rotationInfluence))
         {
             return;
         }
@@ -158,11 +160,10 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
 
         Vector3 currentForward = rotationController.CurrentForward;
 
-        Vector3 blendedDirection =
-            Vector3.Slerp(
-                currentForward,
-                worldDirection,
-                swipeRotationInfluence);
+        Vector3 blendedDirection = Vector3.Slerp(
+            currentForward,
+            worldDirection,
+            rotationInfluence);
 
         blendedDirection.y = 0f;
 
@@ -172,13 +173,11 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
         }
 
         blendedDirection.Normalize();
-
         rotationController.SetForward(blendedDirection);
 
-        if (applyMicroKick && movementMotor != null)
+        if (ShouldApplyMicroKick(swipe.Intent))
         {
-            movementMotor.ApplyJoystickKickstart(
-                swipeDirectionKickImpulse);
+            movementMotor.ApplyJoystickKickstart(swipeDirectionKickImpulse);
         }
 
         if (debugRouter)
@@ -186,17 +185,17 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
             Debug.Log(
                 $"[SwipeDirectionRouter] Swipe redirect | " +
                 $"Intent: {swipe.Intent} | " +
+                $"Influence: {rotationInfluence:F2} | " +
                 $"Current: {currentForward} | " +
                 $"Target: {worldDirection} | " +
                 $"Final: {blendedDirection}");
         }
     }
 
-    /// <summary>
-    /// Determina si el swipe actual debe redireccionar.
-    /// </summary>
-    private bool ShouldRotateForSwipe(SwipeIntent intent)
+    private bool TryGetRotationInfluence(SwipeIntent intent, out float rotationInfluence)
     {
+        rotationInfluence = swipeRotationInfluence;
+
         switch (intent)
         {
             case SwipeIntent.Forward:
@@ -209,28 +208,71 @@ public sealed class SwipeDirectionRouter : MonoBehaviour
                 return true;
 
             case SwipeIntent.Backward:
-                return !ignoreBackwardSwipes;
+                if (!allowBackwardRotationWhenStopped || !IsStopped())
+                {
+                    return false;
+                }
+
+                rotationInfluence = stoppedBackwardSwipeRotationInfluence;
+                return true;
 
             case SwipeIntent.DiagonalBackwardLeft:
             case SwipeIntent.DiagonalBackwardRight:
-                return !ignoreBackwardDiagonals;
+                if (!allowBackwardDiagonalRotationWhenStopped || !IsStopped())
+                {
+                    return false;
+                }
+
+                rotationInfluence = stoppedBackwardSwipeRotationInfluence;
+                return true;
 
             default:
                 return false;
         }
     }
 
+    private bool ShouldApplyMicroKick(SwipeIntent intent)
+    {
+        if (!applyMicroKick || movementMotor == null || swipeDirectionKickImpulse <= 0f)
+        {
+            return false;
+        }
+
+        return intent != SwipeIntent.Backward
+               && intent != SwipeIntent.DiagonalBackwardLeft
+               && intent != SwipeIntent.DiagonalBackwardRight;
+    }
+
+    private bool IsStopped()
+    {
+        if (movementMotor == null)
+        {
+            return true;
+        }
+
+        return movementMotor.CurrentSpeed <= stoppedSpeedThreshold;
+    }
+
     /// <summary>
-    /// Convierte una dirección de pantalla
-    /// a dirección relativa a cámara en mundo.
+    /// Convierte una dirección de pantalla a dirección relativa a cámara en mundo.
     /// </summary>
     private Vector3 ResolveWorldDirection(Vector2 screenDirection)
     {
         Vector3 cameraForward = targetCamera.transform.forward;
-        Vector3 cameraRight   = targetCamera.transform.right;
+        Vector3 cameraRight = targetCamera.transform.right;
 
         cameraForward.y = 0f;
-        cameraRight.y   = 0f;
+        cameraRight.y = 0f;
+
+        if (cameraForward.sqrMagnitude < 0.0001f)
+        {
+            cameraForward = Vector3.forward;
+        }
+
+        if (cameraRight.sqrMagnitude < 0.0001f)
+        {
+            cameraRight = Vector3.right;
+        }
 
         cameraForward.Normalize();
         cameraRight.Normalize();

@@ -3,6 +3,19 @@ using UnityEngine;
 
 /// <summary>
 /// Maneja la respuesta de la pelota ante colisiones con obstáculos del escenario.
+///
+/// Responsabilidades:
+/// - Aplicar retroceso y supresión de drive en colisiones con obstáculos inamovibles.
+/// - Aplicar fuerzas a obstáculos empujables.
+/// - Mantener el estado de bloqueo frontal (<see cref="HasBlockingContact"/>) para que
+///   <see cref="BallMovementMotor"/> pueda proyectar el steering sobre el plano de la pared.
+///
+/// Diseño de barreras:
+/// El rebote es manejado por PhysicMaterials. Este componente solo realiza una corrección
+/// mínima al colisionar con una barrera: cancela la componente de velocidad que apunta
+/// INTO la pared para que el impulso de rebote del PhysicMaterial no sea contrarrestado
+/// por la inercia previa de la bola. El bloqueo frontal sigue registrándose vía
+/// <see cref="OnCollisionStay"/> para que el steering se proyecte sobre el plano de la pared.
 /// </summary>
 [DefaultExecutionOrder(-10)]
 [RequireComponent(typeof(Rigidbody))]
@@ -11,63 +24,63 @@ public sealed class BallCollisionResponder : MonoBehaviour
     #region Inspector
 
     [Header("Referencias")]
-    [SerializeField][Tooltip("Motor de movimiento de la pelota.")]
+    [SerializeField]
+    [Tooltip("Motor de movimiento de la pelota.")]
     private BallMovementMotor movementMotor;
 
-    [SerializeField][Tooltip("Rigidbody de la pelota.")]
+    [SerializeField]
+    [Tooltip("Rigidbody de la pelota.")]
     private Rigidbody rb;
 
     [Header("Layers")]
-    [SerializeField][Tooltip("Capas de suelo. No aplican retroceso ni bloqueo.")]
+    [SerializeField]
+    [Tooltip("Capas de suelo. No aplican retroceso ni bloqueo.")]
     private LayerMask groundLayers;
 
-    [SerializeField][Tooltip("Capas de barreras. Usan rebote conservando velocidad reducida.")]
+    [SerializeField]
+    [Tooltip("Capas de barreras laterales del track. " +
+             "Solo se usa para cancelar la componente de velocidad INTO la pared al chocar. " +
+             "El rebote lo gestiona el PhysicMaterial.")]
     private LayerMask barrierLayers;
 
-    [SerializeField][Tooltip("Capas de obstáculos inamovibles.")]
+    [SerializeField]
+    [Tooltip("Capas de obstáculos inamovibles.")]
     private LayerMask immovableLayers;
 
-    [SerializeField][Tooltip("Capas de obstáculos empujables.")]
+    [SerializeField]
+    [Tooltip("Capas de obstáculos empujables.")]
     private LayerMask pushableLayers;
 
-    [Header("Barreras")]
-    [SerializeField][Tooltip("Si activo, las barreras conservan exactamente la velocidad planar de entrada antes de aplicar la reduccion.")]
-    private bool preserveBarrierSpeed = true;
-
-    [SerializeField][Tooltip("Velocidad mínima para resolver dirección cuando la pelota llega casi detenida a una barrera.")]
-    private float minimumBarrierDirectionSpeed = 0.15f;
-
-    [SerializeField][Tooltip("Fracción de la velocidad de impacto conservada en el rebote. " +
-                             "0.3 = pierde el 70% de velocidad al chocar. Impacto proporcional: lento=rebote pequeño, rápido=rebote mayor.")]
-    [Range(0f, 1f)]
-    private float barrierBounceSpeedRetention = 0.30f;
-
-    [SerializeField][Tooltip("Componente frontal mínima del impacto para aplicar rebote. " +
-                             "0.40 filtra los micro-rebotes en juntas entre CapsuleColliders adyacentes.")]
-    [Range(0f, 0.8f)]
-    private float barrierFrontalImpactThreshold = 0.40f;
-
-    [SerializeField][Tooltip("Si activo, dibuja logs del rebote de barrera.")]
-    private bool debugBarrierBounce;
-
     [Header("Fallback")]
-    [SerializeField][Tooltip("Si activo, las colisiones sin capa configurada se tratan como obstáculos.")]
+    [SerializeField]
+    [Tooltip("Si activo, las colisiones cuya capa no está en immovableLayers ni pushableLayers " +
+             "se tratan como obstáculos con los valores por defecto. " +
+             "Desactivado por defecto para no interferir con las barreras del track.")]
     private bool handleUnclassifiedCollisionsAsObstacles = false;
 
-    [SerializeField][Tooltip("Multiplicador de velocidad para colisiones sin perfil.")][Range(0f, 1f)]
+    [SerializeField]
+    [Tooltip("Multiplicador de velocidad para colisiones sin perfil de obstáculo asignado.")]
+    [Range(0f, 1f)]
     private float defaultSpeedMultiplier = 0.9f;
 
-    [SerializeField][Tooltip("Velocidad mínima de retroceso para colisiones sin perfil.")]
+    [SerializeField]
+    [Tooltip("Velocidad mínima de retroceso para colisiones sin perfil de obstáculo asignado.")]
     private float defaultRecoilSpeed = 1.25f;
 
-    [SerializeField][Tooltip("Duración mínima de supresión de tracción para colisiones sin perfil.")]
+    [SerializeField]
+    [Tooltip("Duración mínima de supresión de drive para colisiones sin perfil de obstáculo asignado.")]
     private float defaultDriveSuppression = 0.08f;
 
     [Header("Bloqueo")]
-    [SerializeField][Tooltip("Dot mínimo para considerar que existe bloqueo frontal real.")][Range(0f, 1f)]
+    [SerializeField]
+    [Tooltip("Dot product mínimo entre la dirección de movimiento y la normal inversa del contacto " +
+             "para considerarlo un bloqueo frontal real. Evita falsos positivos en contactos laterales.")]
+    [Range(0f, 1f)]
     private float forwardBlockThreshold = 0.35f;
 
-    [SerializeField][Tooltip("Velocidad mínima para usar la velocidad real como dirección de impacto.")]
+    [SerializeField]
+    [Tooltip("Velocidad planar mínima en m/s para usar la velocidad real como dirección de impacto. " +
+             "Por debajo de este valor se usa el forward guardado del motor.")]
     private float minimumVelocityDirectionSpeed = 0.15f;
 
     #endregion
@@ -77,19 +90,30 @@ public sealed class BallCollisionResponder : MonoBehaviour
     private readonly HashSet<Collider> activeObstacleContacts = new HashSet<Collider>();
 
     private Vector3 blockingNormal;
-    private bool hasBlockingContact;
+    private bool    hasBlockingContact;
 
     private Vector3 anyContactNormal;
-    private bool hasAnyContact;
+    private bool    hasAnyContact;
 
     #endregion
 
     #region Properties
 
-    public bool HasBlockingContact    => hasBlockingContact;
+    /// <summary>
+    /// <c>true</c> si hay un contacto frontal activo que bloquea la dirección de movimiento.
+    /// Calculado cada FixedUpdate a partir de <see cref="OnCollisionStay"/>.
+    /// Consumido por <see cref="BallMovementMotor"/> para proyectar steering e impulsos sobre el plano de la pared.
+    /// </summary>
+    public bool    HasBlockingContact => hasBlockingContact;
+
+    /// <summary>Normal promediada del contacto de bloqueo actual.</summary>
     public Vector3 BlockingNormal     => blockingNormal;
+
+    /// <summary>Normal promediada de cualquier contacto no-suelo activo.</summary>
     public Vector3 AnyContactNormal   => anyContactNormal;
-    public bool HasAnyContact         => hasAnyContact;
+
+    /// <summary><c>true</c> si hay algún contacto no-suelo activo, independientemente de si bloquea.</summary>
+    public bool    HasAnyContact      => hasAnyContact;
 
     #endregion
 
@@ -109,6 +133,7 @@ public sealed class BallCollisionResponder : MonoBehaviour
 
     private void FixedUpdate()
     {
+        // Limpiar estado de bloqueo cada frame; OnCollisionStay lo reconstruye si el contacto persiste.
         RebuildBlockingState();
     }
 
@@ -119,14 +144,18 @@ public sealed class BallCollisionResponder : MonoBehaviour
 
         int otherLayer = otherCollider.gameObject.layer;
 
+        // El suelo nunca genera retroceso ni bloqueo.
         if (IsGroundLayer(otherLayer)) return;
 
+        // Barrera: cancelar la componente de velocidad INTO la pared para que
+        // el rebote del PhysicMaterial no sea anulado por la inercia de la bola.
         if (IsInLayerMask(otherLayer, barrierLayers))
         {
-            HandleBarrierCollision(collision);
+            CancelIntoWallVelocity(collision);
             return;
         }
 
+        // Evitar procesar el mismo obstáculo varias veces si permanece en contacto.
         if (activeObstacleContacts.Contains(otherCollider)) return;
 
         activeObstacleContacts.Add(otherCollider);
@@ -143,8 +172,13 @@ public sealed class BallCollisionResponder : MonoBehaviour
             return;
         }
 
+        // Las barreras del track caen aquí como colisiones no clasificadas.
+        // Como handleUnclassifiedCollisionsAsObstacles = false por defecto,
+        // no se aplica ningún código de retroceso — el PhysicMaterial lo gestiona.
         if (handleUnclassifiedCollisionsAsObstacles)
+        {
             HandleDefaultCollision(collision);
+        }
     }
 
     private void OnCollisionStay(Collision collision)
@@ -152,16 +186,19 @@ public sealed class BallCollisionResponder : MonoBehaviour
         Collider otherCollider = collision.collider;
         if (otherCollider == null) return;
 
-        int otherLayer = otherCollider.gameObject.layer;
-        if (IsGroundLayer(otherLayer)) return;
+        // El suelo no genera bloqueo.
+        if (IsGroundLayer(otherCollider.gameObject.layer)) return;
 
+        // Registrar bloqueo para barreras, obstáculos o cualquier otro contacto persistente.
         RegisterBlockingFromCollision(collision);
     }
 
     private void OnCollisionExit(Collision collision)
     {
         if (collision.collider != null)
+        {
             activeObstacleContacts.Remove(collision.collider);
+        }
     }
 
     #endregion
@@ -169,59 +206,35 @@ public sealed class BallCollisionResponder : MonoBehaviour
     #region Collision Handling
 
     /// <summary>
-    /// Maneja rebote contra barrera.
-    /// La velocidad de rebote se reduce por barrierBounceSpeedRetention antes de pasarse
-    /// al motor, garantizando que impactos lentos produzcan rebotes pequeños y rápidos mayores.
+    /// Cancela la componente de velocidad planar que apunta INTO la barrera.
+    ///
+    /// El PhysicMaterial ya aplicó su impulso de rebote antes de que este método se ejecute.
+    /// Sin esta corrección, la inercia previa de la bola lucha contra ese impulso y el rebote
+    /// se siente amortiguado o la bola queda pegada. Cancelar solo la componente perpendicular
+    /// preserva la velocidad lateral (deslizamiento) y deja al PhysicMaterial dictar el rebote.
     /// </summary>
-    private void HandleBarrierCollision(Collision collision)
+    private void CancelIntoWallVelocity(Collision collision)
     {
-        if (movementMotor == null || !movementMotor.CanProcessBarrierBounce) return;
+        Vector3 normal = AverageContactNormal(collision);
+        normal.y = 0f;
+        if (normal.sqrMagnitude < 0.0001f) return;
+        normal.Normalize();
 
-        Vector3 contactNormal = AverageContactNormal(collision);
-        contactNormal.y = 0f;
+        Vector3 v        = rb.linearVelocity;
+        float   intoWall = Vector3.Dot(new Vector3(v.x, 0f, v.z), -normal);
 
-        if (contactNormal.sqrMagnitude < 0.0001f) return;
-        contactNormal.Normalize();
-
-        Vector3 relativeVelocity = collision.relativeVelocity;
-        relativeVelocity.y = 0f;
-        float incomingSpeed = relativeVelocity.magnitude;
-
-        Vector3 incomingDirection;
-
-        if (incomingSpeed >= minimumBarrierDirectionSpeed)
+        if (intoWall > 0f)
         {
-            incomingDirection = relativeVelocity.normalized;
-        }
-        else
-        {
-            incomingDirection = -contactNormal;
-            incomingSpeed     = minimumBarrierDirectionSpeed;
+            // Eliminar únicamente la componente INTO la pared. Lateral y Y se conservan.
+            rb.linearVelocity = new Vector3(
+                v.x + normal.x * intoWall,
+                v.y,
+                v.z + normal.z * intoWall);
         }
 
-        float frontalDot = Vector3.Dot(incomingDirection, -contactNormal);
-
-        if (frontalDot < barrierFrontalImpactThreshold) return;
-
-        Vector3 reflectedDirection = Vector3.Reflect(incomingDirection, contactNormal);
-        reflectedDirection.y = 0f;
-
-        if (reflectedDirection.sqrMagnitude < 0.0001f) reflectedDirection = contactNormal;
-        reflectedDirection.Normalize();
-
-        // Reducir la velocidad del rebote según barrierBounceSpeedRetention.
-        // El jugador pierde la mayor parte de la velocidad al chocar, proporcional al impacto.
-        float bounceSpeed = incomingSpeed * barrierBounceSpeedRetention;
-
-        if (debugBarrierBounce)
-        {
-            Debug.Log(
-                $"[BallCollisionResponder] Barrier bounce | " +
-                $"InSpeed: {incomingSpeed:F2} | BounceSpeed: {bounceSpeed:F2} | " +
-                $"FrontalDot: {frontalDot:F2} | Reflected: {reflectedDirection}", this);
-        }
-
-        movementMotor.ApplyBarrierBounce(reflectedDirection, bounceSpeed, contactNormal);
+        // Bloquear steering e impulsos hasta que el jugador dé input explícito.
+        // La fricción pasiva decelerará el rebote del PhysicMaterial de forma natural.
+        movementMotor?.NotifyBarrierHit();
     }
 
     private void HandleImmovableCollision(Collision collision, Collider otherCollider)
@@ -234,7 +247,7 @@ public sealed class BallCollisionResponder : MonoBehaviour
         movementMotor.MultiplySpeed(speedMultiplier);
 
         Vector3 recoilDirection   = CalculateRecoilDirection(collision);
-        float resolvedRecoilSpeed = CalculateResolvedRecoilSpeed(recoilSpeed);
+        float   resolvedRecoilSpeed = CalculateResolvedRecoilSpeed(recoilSpeed);
 
         movementMotor.ApplyImpactRecoil(recoilDirection * resolvedRecoilSpeed);
     }
@@ -251,7 +264,11 @@ public sealed class BallCollisionResponder : MonoBehaviour
         float torqueImpulse            = obstacle != null ? obstacle.TorqueImpulse            : 1.25f;
 
         movementMotor.MultiplySpeed(speedMultiplier);
-        if (driveSuppressionDuration > 0f) movementMotor.SuppressDrive(driveSuppressionDuration);
+
+        if (driveSuppressionDuration > 0f)
+        {
+            movementMotor.SuppressDrive(driveSuppressionDuration);
+        }
 
         Rigidbody otherRigidbody = collision.rigidbody;
         if (otherRigidbody == null || otherRigidbody.isKinematic) return;
@@ -262,7 +279,8 @@ public sealed class BallCollisionResponder : MonoBehaviour
     private void HandleDefaultCollision(Collision collision)
     {
         movementMotor.MultiplySpeed(defaultSpeedMultiplier);
-        movementMotor.ApplyImpactRecoil(CalculateRecoilDirection(collision) * CalculateResolvedRecoilSpeed(defaultRecoilSpeed));
+        movementMotor.ApplyImpactRecoil(
+            CalculateRecoilDirection(collision) * CalculateResolvedRecoilSpeed(defaultRecoilSpeed));
         movementMotor.SuppressDrive(defaultDriveSuppression);
     }
 
@@ -278,6 +296,10 @@ public sealed class BallCollisionResponder : MonoBehaviour
         anyContactNormal   = Vector3.zero;
     }
 
+    /// <summary>
+    /// Acumula normals de contacto del frame actual.
+    /// Distingue entre contactos frontales bloqueantes y cualquier contacto lateral.
+    /// </summary>
     private void RegisterBlockingFromCollision(Collision collision)
     {
         int contactCount = collision.contactCount;
@@ -286,8 +308,8 @@ public sealed class BallCollisionResponder : MonoBehaviour
         Vector3 planarMotionDirection     = GetPlanarMotionDirection();
         Vector3 accumulatedBlockingNormal = Vector3.zero;
         Vector3 accumulatedAnyNormal      = Vector3.zero;
-        int blockingCount = 0;
-        int anyCount      = 0;
+        int     blockingCount             = 0;
+        int     anyCount                  = 0;
 
         for (int i = 0; i < contactCount; i++)
         {
@@ -379,15 +401,19 @@ public sealed class BallCollisionResponder : MonoBehaviour
     #region Pushables
 
     private void ApplyPushableForces(
-        Collision collision, Rigidbody targetRigidbody,
-        float pushImpulse, float lateralPushFactor, float upwardImpulse, float torqueImpulse)
+        Collision collision,
+        Rigidbody targetRigidbody,
+        float pushImpulse,
+        float lateralPushFactor,
+        float upwardImpulse,
+        float torqueImpulse)
     {
         Vector3 mainDirection = GetPlanarMotionDirection();
         Vector3 right         = Vector3.Cross(Vector3.up, mainDirection).normalized;
 
         ContactPoint contact = collision.GetContact(0);
-        Vector3 toContact    = contact.point - transform.position;
-        toContact.y          = 0f;
+        Vector3      toContact = contact.point - transform.position;
+        toContact.y = 0f;
 
         float sideSign = toContact.sqrMagnitude > 0.0001f
             ? Mathf.Sign(Vector3.Dot(toContact.normalized, right))
@@ -395,7 +421,9 @@ public sealed class BallCollisionResponder : MonoBehaviour
 
         Vector3 finalDirection = mainDirection + right * sideSign * lateralPushFactor;
         finalDirection.y = 0f;
-        finalDirection = finalDirection.sqrMagnitude < 0.0001f ? mainDirection : finalDirection.normalized;
+        finalDirection = finalDirection.sqrMagnitude < 0.0001f
+            ? mainDirection
+            : finalDirection.normalized;
 
         Vector3 impulse = finalDirection * pushImpulse;
         impulse.y += upwardImpulse;
@@ -404,7 +432,9 @@ public sealed class BallCollisionResponder : MonoBehaviour
         if (torqueImpulse <= 0f) return;
 
         Vector3 torqueAxis = Vector3.Cross(Vector3.up, finalDirection).normalized;
-        targetRigidbody.AddTorque(torqueAxis * torqueImpulse * (sideSign == 0f ? 1f : sideSign), ForceMode.Impulse);
+        targetRigidbody.AddTorque(
+            torqueAxis * torqueImpulse * (sideSign == 0f ? 1f : sideSign),
+            ForceMode.Impulse);
     }
 
     #endregion

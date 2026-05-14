@@ -138,6 +138,13 @@ public sealed class TrackContentGenerator : MonoBehaviour
         objectPool.DespawnAllActive();
     }
 
+    /// <summary>
+    /// Expone el mapa de reservas del nivel generado.
+    /// PowerUpGenerator lo consume para evitar solapar coleccionables con monedas y obstáculos.
+    /// Solo es válido después de llamar a GenerateContent().
+    /// </summary>
+    public TrackSpawnReservationMap ReservationMap => reservationMap;
+
     #endregion
 
     #region Setup
