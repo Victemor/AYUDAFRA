@@ -143,15 +143,6 @@ public sealed class BallMovementMotor : MonoBehaviour
              "Valores altos (≥ 16) disipan el retroceso rápidamente para devolver control al jugador.")]
     private float impactVelocityDecay = 16f;
 
-    [Header("Deslizamiento Lateral en Pared")]
-    [SerializeField]
-    [Tooltip("Factor aplicado a la componente de deslizamiento cuando la bola está bloqueada por una pared.\n" +
-             "1.0 = deslizamiento completo sin pérdida de velocidad lateral.\n" +
-             "0.9 = deslizamiento con algo de fricción de pared.\n" +
-             "Recomendado: 0.95–1.0 para que el jugador no pierda velocidad al bordear paredes.")]
-    [Range(0f, 1f)]
-    private float blockedSlideFactor = 0.98f;
-
     [Header("Steering")]
     [SerializeField]
     [Tooltip("Velocidad máxima en grados/s a la que la dirección de velocidad planar\n" +
@@ -750,7 +741,12 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     /// <summary>
     /// Proyecta la velocidad deseada sobre el plano de la barrera cuando hay bloqueo frontal.
-    /// Convierte la componente INTO la pared en deslizamiento lateral con pérdida mínima de velocidad.
+    ///
+    /// Solo elimina la componente INTO la pared. La componente lateral (deslizamiento)
+    /// se preserva al 100%. No se aplica ningún factor de amortiguación:
+    /// aplicar blockedSlideFactor cada FixedUpdate (50 Hz) causaba una pérdida del 64%
+    /// de velocidad lateral por segundo, incluso en deslizamientos casi paralelos.
+    /// La única fricción válida durante el deslizamiento es passiveFriction del suelo.
     /// </summary>
     private Vector3 ResolveBlockedVelocity(Vector3 desired)
     {
@@ -763,11 +759,12 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         Vector3 dp   = GetPlanarVelocity(desired);
         float   into = Vector3.Dot(dp, -n);
-        if (into <= 0f) return desired;
 
-        // Proyectar sobre el plano de la pared y aplicar factor de deslizamiento.
-        // blockedSlideFactor = 0.98 → prácticamente sin pérdida lateral al bordear paredes.
-        Vector3 slide = (dp - (-n * into)) * blockedSlideFactor;
+        // Ignorar componentes "into" mínimas por ruido de punto flotante.
+        if (into <= 0.001f) return desired;
+
+        // Proyectar sobre el plano de la pared sin amortiguación lateral.
+        Vector3 slide = dp + n * into; // equivalente a dp - (-n * into)
 
         return slide.sqrMagnitude < 0.0001f
             ? new Vector3(0f, desired.y, 0f)

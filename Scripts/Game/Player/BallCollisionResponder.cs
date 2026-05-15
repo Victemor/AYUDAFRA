@@ -66,9 +66,10 @@ public sealed class BallCollisionResponder : MonoBehaviour
 
     [SerializeField]
     [Tooltip("Velocidad perpendicular mínima en m/s para aplicar rebote.\n" +
-             "Contactos suaves por debajo de este umbral se ignoran para evitar\n" +
-             "vibraciones durante el deslizamiento lateral.")]
-    private float minimumBounceImpactSpeed = 0.4f;
+             "Con 0.4 la bola se pegaba a las paredes si llegaba a baja velocidad:\n" +
+             "Unity quitaba la velocidad perpendicular y el código no la reponía.\n" +
+             "0.05 es prácticamente 0 — solo filtra contactos de rozamiento mínimo.")]
+    private float minimumBounceImpactSpeed = 0.05f;
 
     [Header("Fallback — Colisiones No Clasificadas")]
     [SerializeField]
@@ -161,6 +162,25 @@ public sealed class BallCollisionResponder : MonoBehaviour
     {
         if (rb == null)            rb            = GetComponent<Rigidbody>();
         if (movementMotor == null) movementMotor = GetComponent<BallMovementMotor>();
+
+        // Asignar por código un PhysicsMaterial de fricción cero y sin rebote al Collider
+        // de la pelota. Sin esto, Unity aplica el material por defecto (dynamicFriction = 0.6)
+        // que roba velocidad durante el deslizamiento lateral contra las paredes.
+        // Al eliminar todos los PhysicsMaterials del proyecto, el default de Unity aún actúa.
+        // Esta asignación en Awake garantiza que la física de contacto de la bola
+        // sea 100% controlada por código, sin interferencia del solver de Unity.
+        Collider ownCollider = GetComponent<Collider>();
+        if (ownCollider != null)
+        {
+            ownCollider.material = new PhysicsMaterial("BallZeroFriction")
+            {
+                dynamicFriction = 0f,
+                staticFriction  = 0f,
+                bounciness      = 0f,
+                frictionCombine = PhysicsMaterialCombine.Minimum,
+                bounceCombine   = PhysicsMaterialCombine.Minimum,
+            };
+        }
     }
 
     private void FixedUpdate()
