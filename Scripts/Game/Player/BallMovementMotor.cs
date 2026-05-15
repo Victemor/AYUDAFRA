@@ -78,14 +78,6 @@ public sealed class BallMovementMotor : MonoBehaviour
     private SphereRotationController rotationController;
 
     [SerializeField]
-    [Tooltip("Acumulador de impulsos de avance generados por swipes.")]
-    private ImpulseAccumulator impulseAccumulator;
-
-    [SerializeField]
-    [Tooltip("Acumulador de frenado generado por swipes hacia atrás.")]
-    private BrakeAccumulator brakeAccumulator;
-
-    [SerializeField]
     [Tooltip("Sensor de suelo. Detecta si la bola está en contacto y la normal del suelo.")]
     private BallGroundSensor groundSensor;
 
@@ -186,11 +178,6 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     #region Runtime
 
-    private float pendingImpulse;
-    private float pendingBrake;
-    private bool  hasNewImpulse;
-    private bool  hasNewBrake;
-
     private ImpactState     impactState;
     private ForcedStopState forcedStopState;
 
@@ -249,8 +236,6 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         rb                 = GetComponent<Rigidbody>();
         rotationController = GetComponent<SphereRotationController>();
-        impulseAccumulator = GetComponent<ImpulseAccumulator>();
-        brakeAccumulator   = GetComponent<BrakeAccumulator>();
         groundSensor       = GetComponent<BallGroundSensor>();
         collisionResponder = GetComponent<BallCollisionResponder>();
     }
@@ -259,8 +244,6 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (rb == null)                 rb                 = GetComponent<Rigidbody>();
         if (rotationController == null) rotationController = GetComponent<SphereRotationController>();
-        if (impulseAccumulator == null) impulseAccumulator = GetComponent<ImpulseAccumulator>();
-        if (brakeAccumulator == null)   brakeAccumulator   = GetComponent<BrakeAccumulator>();
         if (groundSensor == null)       groundSensor       = GetComponent<BallGroundSensor>();
         if (collisionResponder == null) collisionResponder = GetComponent<BallCollisionResponder>();
 
@@ -271,24 +254,15 @@ public sealed class BallMovementMotor : MonoBehaviour
         rb.constraints           |= RigidbodyConstraints.FreezeRotationZ;
     }
 
-    private void OnEnable()
-    {
-        if (impulseAccumulator != null) impulseAccumulator.OnImpulseReady += HandleImpulseReady;
-        if (brakeAccumulator   != null) brakeAccumulator.OnBrakeReady    += HandleBrakeReady;
-    }
+    private void OnEnable() { }
 
-    private void OnDisable()
-    {
-        if (impulseAccumulator != null) impulseAccumulator.OnImpulseReady -= HandleImpulseReady;
-        if (brakeAccumulator   != null) brakeAccumulator.OnBrakeReady    -= HandleBrakeReady;
-    }
+    private void OnDisable() { }
 
     private void FixedUpdate()
     {
         TickTimers();
         groundSensor?.RefreshGroundState();
         UpdateImpactRecovery();
-        NotifyAccumulators();
 
         // ImpactState: retroceso por obstáculo — bloquea input durante la recuperación.
         if (impactState.IsActive)
@@ -308,35 +282,13 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
-        // Pipeline normal: impulso, steering, frenos, fricción, adhesión.
-        // El steering y el impulso proyectan su forward sobre el plano de la pared
-        // cuando HasBlockingContact es true, convirtiendo la presión en deslizamiento.
-        ApplyPendingImpulse();
+        // Pipeline normal: steering, frenos, fricción, adhesión, mantenimiento.
         ApplySteering();
-        ApplyPendingBrake();
         ApplyJoystickBrakeForce();
         ApplyPassiveFriction();
         ApplyGroundAdhesion();
         ClampGroundedVerticalVelocity();
         EnforceSpeedMaintenance();
-    }
-
-    #endregion
-
-    #region Event Handlers
-
-    private void HandleImpulseReady(float impulse)
-    {
-        pendingImpulse += impulse;
-        hasNewImpulse   = true;
-        brakeAccumulator?.ResetConsecutive();
-    }
-
-    private void HandleBrakeReady(float brakeForce)
-    {
-        pendingBrake += brakeForce;
-        hasNewBrake   = true;
-        impulseAccumulator?.ResetConsecutive();
     }
 
     #endregion
@@ -349,10 +301,6 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     public void Stop()
     {
-        pendingImpulse            = 0f;
-        pendingBrake              = 0f;
-        hasNewImpulse             = false;
-        hasNewBrake               = false;
         impactState               = ImpactState.Default;
         forcedStopState           = ForcedStopState.Default;
         maintainCurrentSpeed      = false;
@@ -361,9 +309,6 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         rb.linearVelocity  = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
-
-        impulseAccumulator?.ResetConsecutive();
-        brakeAccumulator?.ResetConsecutive();
     }
 
     /// <summary>
@@ -408,11 +353,6 @@ public sealed class BallMovementMotor : MonoBehaviour
             Velocity      = recoilVelocity,
         };
 
-        pendingImpulse = 0f;
-        pendingBrake   = 0f;
-        hasNewImpulse  = false;
-        hasNewBrake    = false;
-
         Vector3 c         = rb.linearVelocity;
         rb.linearVelocity = new Vector3(recoilVelocity.x, c.y, recoilVelocity.z);
     }
@@ -428,11 +368,6 @@ public sealed class BallMovementMotor : MonoBehaviour
             RecoveryTimer = Mathf.Max(impactState.RecoveryTimer, duration),
             Velocity      = impactState.Velocity,
         };
-
-        pendingImpulse = 0f;
-        pendingBrake   = 0f;
-        hasNewImpulse  = false;
-        hasNewBrake    = false;
     }
 
     /// <summary>
@@ -447,9 +382,7 @@ public sealed class BallMovementMotor : MonoBehaviour
             Deceleration = Mathf.Max(0f, deceleration),
         };
 
-        impactState    = ImpactState.Default;
-        pendingImpulse = 0f;
-        pendingBrake   = 0f;
+        impactState = ImpactState.Default;
     }
 
     /// <summary>Cancela la detención forzada y devuelve el control al jugador.</summary>
@@ -525,6 +458,64 @@ public sealed class BallMovementMotor : MonoBehaviour
     }
 
     /// <summary>
+    /// Aplica un impulso de velocidad en una dirección mundo explícita.
+    /// Se suma a la velocidad planar actual y se clampea al techo efectivo (maxSpeed × boost).
+    ///
+    /// Usado por <see cref="SwipeDirectionController"/> para aplicar el impulso del swipe
+    /// en la dirección objetivo del swipe, independientemente de hacia dónde apunta
+    /// la cara en ese frame (la cara puede aún estar rotando hacia el destino).
+    /// </summary>
+    /// <param name="worldDirection">Dirección en espacio mundo. La componente Y se ignora.</param>
+    /// <param name="speed">Velocidad en m/s a añadir en esa dirección.</param>
+    public void ApplyImpulseInDirection(Vector3 worldDirection, float speed)
+    {
+        if (speed <= 0f) return;
+
+        worldDirection.y = 0f;
+        if (worldDirection.sqrMagnitude < 0.0001f) return;
+        worldDirection.Normalize();
+
+        Vector3 v   = rb.linearVelocity;
+        Vector3 p   = GetPlanarVelocity(v) + worldDirection * speed;
+        float   max = maxSpeed * speedBoostMultiplier;
+        if (p.magnitude > max) p = p.normalized * max;
+        rb.linearVelocity = new Vector3(p.x, v.y, p.z);
+    }
+
+    /// <summary>
+    /// Reduce la velocidad planar de la bola en <paramref name="speedReduction"/> m/s de forma inmediata.
+    /// Si la velocidad resultante cae por debajo de <c>stopThreshold</c>, la bola se detiene.
+    ///
+    /// Usado por <see cref="SwipeDirectionController"/> para swipes hacia el hemisferio trasero
+    /// mientras la bola está en movimiento: cada swipe quita una cantidad fija de velocidad.
+    /// </summary>
+    public void ApplyBrakePulse(float speedReduction)
+    {
+        if (speedReduction <= 0f) return;
+
+        Vector3 v     = rb.linearVelocity;
+        Vector3 p     = GetPlanarVelocity(v);
+        float   speed = p.magnitude;
+
+        if (speed <= stopThreshold)
+        {
+            rb.linearVelocity = new Vector3(0f, v.y, 0f);
+            return;
+        }
+
+        float newSpeed = Mathf.Max(0f, speed - speedReduction);
+
+        if (newSpeed <= stopThreshold)
+        {
+            rb.linearVelocity = new Vector3(0f, v.y, 0f);
+            return;
+        }
+
+        p                 = p.normalized * newSpeed;
+        rb.linearVelocity = new Vector3(p.x, v.y, p.z);
+    }
+
+    /// <summary>
     /// Aplica un impulso directo en la dirección del forward actual sin pasar por el acumulador.
     /// Usado por <c>JoystickMovementController</c> para el arranque desde cero y por
     /// <c>SwipeDirectionRouter</c> para el micro-kick de redirección con swipe.
@@ -574,14 +565,6 @@ public sealed class BallMovementMotor : MonoBehaviour
             jumpBypassTimer = Mathf.Max(0f, jumpBypassTimer - Time.fixedDeltaTime);
     }
 
-    private void NotifyAccumulators()
-    {
-        float speed       = CurrentSpeed;
-        float maxEffective = maxSpeed * speedBoostMultiplier;
-        impulseAccumulator?.NotifyCurrentSpeed(speed, maxEffective);
-        brakeAccumulator?.NotifyCurrentSpeed(speed);
-    }
-
     private void UpdateImpactRecovery()
     {
         if (!impactState.IsActive)
@@ -610,44 +593,6 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         Vector3 c         = rb.linearVelocity;
         rb.linearVelocity = new Vector3(impactState.Velocity.x, c.y, impactState.Velocity.z);
-    }
-
-    /// <summary>
-    /// Aplica el impulso pendiente en la dirección del forward actual.
-    /// Si la bola está bloqueada por una pared, el forward se proyecta sobre el plano
-    /// de la barrera para que el swipe produzca deslizamiento en lugar de presión.
-    /// </summary>
-    private void ApplyPendingImpulse()
-    {
-        if (!hasNewImpulse || pendingImpulse <= 0f) return;
-        hasNewImpulse = false;
-
-        Vector3 fwd = GetMovementForward();
-
-        if (collisionResponder != null && collisionResponder.HasBlockingContact)
-        {
-            Vector3 blockNormal = collisionResponder.BlockingNormal;
-            blockNormal.y = 0f;
-            if (blockNormal.sqrMagnitude > 0.0001f)
-            {
-                blockNormal.Normalize();
-                Vector3 projectedFwd = Vector3.ProjectOnPlane(fwd, blockNormal);
-                projectedFwd.y = 0f;
-                if (projectedFwd.sqrMagnitude > 0.01f)
-                    fwd = projectedFwd.normalized;
-            }
-        }
-
-        Vector3 v    = rb.linearVelocity;
-        Vector3 p    = GetPlanarVelocity(v) + fwd * pendingImpulse;
-        float   eMax = maxSpeed * speedBoostMultiplier;
-        float   sMax = ResolveSlopeAdjustedMax(fwd, eMax);
-
-        if (p.magnitude > sMax) p = p.normalized * sMax;
-
-        p                 = ResolveBlockedVelocity(p);
-        rb.linearVelocity = new Vector3(p.x, v.y, p.z);
-        pendingImpulse    = 0f;
     }
 
     /// <summary>
@@ -686,21 +631,6 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         Vector3 newVel    = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
         rb.linearVelocity = newVel;
-    }
-
-    private void ApplyPendingBrake()
-    {
-        if (!hasNewBrake || pendingBrake <= 0f) return;
-        hasNewBrake = false;
-
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
-        if (speed <= stopThreshold) { pendingBrake = 0f; return; }
-
-        float ns = Mathf.Max(stopThreshold, speed - pendingBrake);
-        rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
-        pendingBrake      = 0f;
     }
 
     private void ApplyJoystickBrakeForce()
