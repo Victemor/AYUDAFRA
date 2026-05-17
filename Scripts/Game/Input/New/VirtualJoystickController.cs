@@ -192,6 +192,13 @@ public sealed class VirtualJoystickController : MonoBehaviour
 
     private bool hasValidDirection;
 
+    // Flags para rotación trasera única.
+    // hasSetRearDirection: true = ya se ejecutó ApplyWeightedRotation esta sesión trasera.
+    //   Previene llamadas repetidas que causan el loop cámara → cara → cámara.
+    // wasRearInput: detecta la transición trasero→frontal para resetear el flag.
+    private bool hasSetRearDirection = false;
+    private bool wasRearInput = false;
+
     #endregion
 
     #region Properties
@@ -341,6 +348,8 @@ public sealed class VirtualJoystickController : MonoBehaviour
         lastEvaluatedRawScreenAngle = ForwardAngleDegrees;
 
         hasValidDirection = false;
+        hasSetRearDirection = false;
+        wasRearInput = false;
 
         movementMotor?.SetJoystickBrakeStrength(0f);
         movementMotor?.SetJoystickInput(Vector3.zero, 0f);
@@ -400,6 +409,15 @@ public sealed class VirtualJoystickController : MonoBehaviour
         hasValidDirection = true;
 
         bool isRearInput = inputVector.y < -rearInputDeadzoneYPx;
+
+        // Al salir de la zona trasera, resetear el flag para permitir
+        // una nueva rotación trasera en la siguiente sesión de freno.
+        if (wasRearInput && !isRearInput)
+        {
+            hasSetRearDirection = false;
+        }
+
+        wasRearInput = isRearInput;
 
         if (isRearInput)
         {
@@ -470,23 +488,34 @@ public sealed class VirtualJoystickController : MonoBehaviour
         }
 
         movementMotor.SetJoystickBrakeStrength(0f);
-
-        float restrictedAngle = ResolveSpeedRestrictedScreenAngle(rawScreenAngle);
-        Vector2 restrictedDirection = ScreenAngleToDirection(restrictedAngle);
-
-        Vector3 desiredWorldDirection = ProjectScreenDirectionRelativeToForward(
-            restrictedDirection,
-            referenceForward);
-
-        Vector3 appliedDirection = ApplyWeightedRotation(desiredWorldDirection);
-
         movementMotor.SetJoystickInput(Vector3.zero, 0f);
 
-        if (debugController)
+        // Rotación trasera única: solo se ejecuta una vez por sesión de freno.
+        // Si se llamara cada frame, la cámara seguiría la cara en rotación →
+        // el ángulo de pantalla cambiaría → nueva rotación → loop infinito.
+        if (!hasSetRearDirection)
         {
-            Debug.Log(
-                $"[DirectionalTouch] REAR TURN | raw:{rawScreenAngle:F1}° | " +
-                $"accepted:{restrictedAngle:F1}° | speed:{currentSpeed:F2} | dir:{appliedDirection:F2}");
+            float restrictedAngle = ResolveSpeedRestrictedScreenAngle(rawScreenAngle);
+            Vector2 restrictedDirection = ScreenAngleToDirection(restrictedAngle);
+
+            Vector3 desiredWorldDirection = ProjectScreenDirectionRelativeToForward(
+                restrictedDirection,
+                referenceForward);
+
+            Vector3 appliedDirection = ApplyWeightedRotation(desiredWorldDirection);
+
+            // Actualizar referenceForward al nuevo forward de la bola.
+            // Sin esto, el mapeo pantalla→mundo usa el forward antiguo y los
+            // ángulos se distorsionan cuando la cámara rota para seguir la cara.
+            referenceForward = ResolveCurrentForward();
+            hasSetRearDirection = true;
+
+            if (debugController)
+            {
+                Debug.Log(
+                    $"[DirectionalTouch] REAR TURN (once) | raw:{rawScreenAngle:F1}° | " +
+                    $"accepted:{restrictedAngle:F1}° | speed:{currentSpeed:F2} | dir:{appliedDirection:F2}");
+            }
         }
     }
 
@@ -747,6 +776,8 @@ public sealed class VirtualJoystickController : MonoBehaviour
         movementMotor?.SetJoystickBrakeStrength(0f);
 
         hasValidDirection = false;
+        hasSetRearDirection = false;
+        wasRearInput = false;
     }
 
     /// <summary>
