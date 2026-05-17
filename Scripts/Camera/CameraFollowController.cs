@@ -29,6 +29,11 @@ public sealed class CameraFollowController : MonoBehaviour
     private SphereRotationController rotationController;
 
     [SerializeField]
+    [Tooltip("Controlador táctil de la pelota. Determina si la cámara puede alinearse\n" +
+             "con la cara: la cámara solo rota mientras el dedo se mueve.")]
+    private DirectionalTouchController touchController;
+
+    [SerializeField]
     [Tooltip("Configuración de la cámara.")]
     private CameraFollowConfig config;
 
@@ -90,6 +95,7 @@ public sealed class CameraFollowController : MonoBehaviour
         targetRigidbody = target.GetComponent<Rigidbody>();
         movementMotor = target.GetComponent<BallMovementMotor>();
         rotationController = target.GetComponent<SphereRotationController>();
+        touchController = target.GetComponent<DirectionalTouchController>();
     }
 
     private void Awake()
@@ -143,11 +149,14 @@ public sealed class CameraFollowController : MonoBehaviour
 
         Vector3 desiredReferenceForward = ResolveReferenceForward();
 
-        cachedReferenceForward = forwardReferenceSolver.UpdateReferenceForward(
-            desiredReferenceForward,
-            config,
-            Time.deltaTime,
-            freezeTracking: false);
+     
+        // CameraForwardReferenceSolver aplica más lag automáticamente en giros bruscos
+        // a través de su sistema de momentum — no se necesita bloqueo explícito.
+    cachedReferenceForward = forwardReferenceSolver.UpdateReferenceForward(
+        desiredReferenceForward,
+        config,
+        Time.deltaTime,
+        alignSpeedMultiplier: 1f);
 
         CameraRigPose desiredPose = rigComposer.ComposePose(
             target,

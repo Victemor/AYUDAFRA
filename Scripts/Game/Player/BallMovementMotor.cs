@@ -33,7 +33,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     private struct ImpactState
     {
-        public float   RecoveryTimer;
+        public float RecoveryTimer;
         public Vector3 Velocity;
 
         /// <summary><c>true</c> mientras el timer de recuperación está activo.</summary>
@@ -43,7 +43,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         public static readonly ImpactState Default = new ImpactState
         {
             RecoveryTimer = 0f,
-            Velocity      = Vector3.zero,
+            Velocity = Vector3.zero,
         };
     }
 
@@ -53,13 +53,13 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     private struct ForcedStopState
     {
-        public bool  IsActive;
+        public bool IsActive;
         public float Deceleration;
 
         /// <summary>Valor por defecto: sin detención forzada activa.</summary>
         public static readonly ForcedStopState Default = new ForcedStopState
         {
-            IsActive     = false,
+            IsActive = false,
             Deceleration = 0f,
         };
     }
@@ -165,25 +165,40 @@ public sealed class BallMovementMotor : MonoBehaviour
     [Range(1f, 3f)]
     private float steeringResponseExponent = 1.15f;
 
+    [Header("Freno de Joystick")]
+    [SerializeField]
+    [Tooltip("Desaceleración máxima en m/s² cuando el freno del joystick está al 100%.\n" +
+             "Se alcanza cuando el dedo está a innerMaxRadiusPx píxeles debajo del inner center.\n" +
+             "El freno real = maxJoystickBrakeForce × brakeStrength × Time.fixedDeltaTime.\n" +
+             "Rango recomendado: 15–30 m/s².")]
+    private float maxJoystickBrakeForce = 20f;
+
     #endregion
 
     #region Runtime
 
-    private ImpactState     impactState;
+    private ImpactState impactState;
     private ForcedStopState forcedStopState;
 
     private float speedBoostMultiplier = 1f;
     private float jumpBypassTimer;
 
-    private bool  maintainCurrentSpeed;
+    private bool maintainCurrentSpeed;
     private float maintainedSpeedTarget;
     private float joystickBrakeDeceleration;
+
+    // Entrada del VirtualJoystickController — se establece cada FixedUpdate desde el controlador.
+    private Vector3 joystickTargetDirection;
+    private float joystickTargetSpeed;
+
+    // Fuerza de freno del joystick virtual [0, 1]. 0 = sin freno. 1 = freno máximo.
+    private float joystickBrakeStrength;
 
     /// <summary>
     /// Multiplicadores aplicados por el power-up ReducedInertia.
     /// Se aplican sobre passiveFriction y groundStickForce respectivamente.
     /// </summary>
-    private float inertiaFrictionMultiplier    = 1f;
+    private float inertiaFrictionMultiplier = 1f;
     private float inertiaGroundStickMultiplier = 1f;
 
     #endregion
@@ -225,29 +240,34 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void Reset()
     {
-        rb                 = GetComponent<Rigidbody>();
+        rb = GetComponent<Rigidbody>();
         rotationController = GetComponent<SphereRotationController>();
-        groundSensor       = GetComponent<BallGroundSensor>();
+        groundSensor = GetComponent<BallGroundSensor>();
         collisionResponder = GetComponent<BallCollisionResponder>();
     }
 
     private void Awake()
     {
-        if (rb == null)                 rb                 = GetComponent<Rigidbody>();
+        if (rb == null) rb = GetComponent<Rigidbody>();
         if (rotationController == null) rotationController = GetComponent<SphereRotationController>();
-        if (groundSensor == null)       groundSensor       = GetComponent<BallGroundSensor>();
+        if (groundSensor == null) groundSensor = GetComponent<BallGroundSensor>();
         if (collisionResponder == null) collisionResponder = GetComponent<BallCollisionResponder>();
 
-        rb.interpolation          = RigidbodyInterpolation.Interpolate;
+        rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-        rb.constraints           |= RigidbodyConstraints.FreezeRotationX;
-        rb.constraints           |= RigidbodyConstraints.FreezeRotationY;
-        rb.constraints           |= RigidbodyConstraints.FreezeRotationZ;
+        rb.constraints |= RigidbodyConstraints.FreezeRotationX;
+        rb.constraints |= RigidbodyConstraints.FreezeRotationY;
+        rb.constraints |= RigidbodyConstraints.FreezeRotationZ;
     }
 
     private void OnEnable() { }
 
-    private void OnDisable() { }
+    private void OnDisable()
+    {
+        joystickTargetDirection = Vector3.zero;
+        joystickTargetSpeed = 0f;
+        joystickBrakeStrength = 0f;
+    }
 
     private void FixedUpdate()
     {
@@ -277,6 +297,8 @@ public sealed class BallMovementMotor : MonoBehaviour
         ApplySteering();
         ApplyJoystickBrakeForce();
         ApplyPassiveFriction();
+        ApplyJoystickAcceleration();
+        ApplyJoystickBraking();
         ApplyGroundAdhesion();
         ClampGroundedVerticalVelocity();
         EnforceSpeedMaintenance();
@@ -292,13 +314,13 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     public void Stop()
     {
-        impactState               = ImpactState.Default;
-        forcedStopState           = ForcedStopState.Default;
-        maintainCurrentSpeed      = false;
-        maintainedSpeedTarget     = 0f;
+        impactState = ImpactState.Default;
+        forcedStopState = ForcedStopState.Default;
+        maintainCurrentSpeed = false;
+        maintainedSpeedTarget = 0f;
         joystickBrakeDeceleration = 0f;
 
-        rb.linearVelocity  = Vector3.zero;
+        rb.linearVelocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
     }
 
@@ -321,11 +343,11 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     public void MultiplySpeed(float multiplier)
     {
-        float   c = Mathf.Clamp01(multiplier);
+        float c = Mathf.Clamp01(multiplier);
         Vector3 v = rb.linearVelocity;
-        v.x               *= c;
-        v.z               *= c;
-        rb.linearVelocity  = v;
+        v.x *= c;
+        v.z *= c;
+        rb.linearVelocity = v;
     }
 
     /// <summary>
@@ -341,10 +363,10 @@ public sealed class BallMovementMotor : MonoBehaviour
         impactState = new ImpactState
         {
             RecoveryTimer = postImpactRecoveryDuration,
-            Velocity      = recoilVelocity,
+            Velocity = recoilVelocity,
         };
 
-        Vector3 c         = rb.linearVelocity;
+        Vector3 c = rb.linearVelocity;
         rb.linearVelocity = new Vector3(recoilVelocity.x, c.y, recoilVelocity.z);
     }
 
@@ -357,7 +379,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         impactState = new ImpactState
         {
             RecoveryTimer = Mathf.Max(impactState.RecoveryTimer, duration),
-            Velocity      = impactState.Velocity,
+            Velocity = impactState.Velocity,
         };
     }
 
@@ -369,7 +391,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         forcedStopState = new ForcedStopState
         {
-            IsActive     = true,
+            IsActive = true,
             Deceleration = Mathf.Max(0f, deceleration),
         };
 
@@ -390,14 +412,14 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// <param name="groundStickMult">Multiplicador sobre groundStickForce [0–1]. 0.4 = 60% menos adhesión.</param>
     public void SetInertiaReduction(float frictionMult, float groundStickMult)
     {
-        inertiaFrictionMultiplier    = Mathf.Clamp01(frictionMult);
+        inertiaFrictionMultiplier = Mathf.Clamp01(frictionMult);
         inertiaGroundStickMultiplier = Mathf.Clamp01(groundStickMult);
     }
 
     /// <summary>Revierte los multiplicadores de inertia reduction a sus valores neutros.</summary>
     public void ClearInertiaReduction()
     {
-        inertiaFrictionMultiplier    = 1f;
+        inertiaFrictionMultiplier = 1f;
         inertiaGroundStickMultiplier = 1f;
     }
 
@@ -412,10 +434,10 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     public void ApplyJump(float jumpForce)
     {
-        Vector3 v         = rb.linearVelocity;
-        v.y               = Mathf.Max(v.y, jumpForce);
+        Vector3 v = rb.linearVelocity;
+        v.y = Mathf.Max(v.y, jumpForce);
         rb.linearVelocity = v;
-        jumpBypassTimer   = 0.4f;
+        jumpBypassTimer = 0.4f;
     }
 
     #endregion
@@ -449,6 +471,37 @@ public sealed class BallMovementMotor : MonoBehaviour
     }
 
     /// <summary>
+    /// Establece la dirección y velocidad objetivo del joystick virtual.
+    /// Llamado cada FixedUpdate por <see cref="VirtualJoystickController"/> (orden 10)
+    /// DESPUÉS de que el motor ya corrió (orden 0), por lo que el efecto se aplica
+    /// en el siguiente frame de física.
+    ///
+    /// Solo aplica impulso cuando <paramref name="targetSpeed"/> &gt; <see cref="CurrentSpeed"/>
+    /// (acelerando). Si la bola ya va igual o más rápido que el objetivo, la fricción
+    /// pasiva trabaja sola sin interferencia. Esto garantiza que la fricción siempre
+    /// sea constante y visible para el jugador.
+    /// </summary>
+    /// <param name="direction">Dirección mundo normalizada. Vector3.zero = sin input.</param>
+    /// <param name="targetSpeed">Velocidad objetivo en m/s. 0 = sin input.</param>
+    public void SetJoystickInput(Vector3 direction, float targetSpeed)
+    {
+        joystickTargetDirection = direction;
+        joystickTargetSpeed = Mathf.Max(0f, targetSpeed);
+    }
+
+    /// <summary>
+    /// Establece la intensidad del freno del joystick virtual [0, 1].
+    /// 0 = sin freno adicional. 1 = freno máximo (maxJoystickBrakeForce m/s²).
+    /// Llamado cada FixedUpdate por VirtualJoystickController en modo freno.
+    /// El freno es proporcional: dedo ligeramente debajo del inner center = freno suave.
+    /// Dedo a distancia máxima abajo = freno máximo.
+    /// </summary>
+    public void SetJoystickBrakeStrength(float strength)
+    {
+        joystickBrakeStrength = Mathf.Clamp01(strength);
+    }
+
+    /// <summary>
     /// Aplica un impulso de velocidad en una dirección mundo explícita.
     /// Se suma a la velocidad planar actual y se clampea al techo efectivo (maxSpeed × boost).
     ///
@@ -466,9 +519,9 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (worldDirection.sqrMagnitude < 0.0001f) return;
         worldDirection.Normalize();
 
-        Vector3 v   = rb.linearVelocity;
-        Vector3 p   = GetPlanarVelocity(v) + worldDirection * speed;
-        float   max = maxSpeed * speedBoostMultiplier;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v) + worldDirection * speed;
+        float max = maxSpeed * speedBoostMultiplier;
         if (p.magnitude > max) p = p.normalized * max;
         rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
@@ -484,9 +537,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (speedReduction <= 0f) return;
 
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
+        float speed = p.magnitude;
 
         if (speed <= stopThreshold)
         {
@@ -502,7 +555,7 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
-        p                 = p.normalized * newSpeed;
+        p = p.normalized * newSpeed;
         rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
 
@@ -517,9 +570,9 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (impulse <= 0f) return;
 
         Vector3 fwd = GetMovementForward();
-        Vector3 v   = rb.linearVelocity;
-        Vector3 p   = GetPlanarVelocity(v) + fwd * impulse;
-        float   max = maxSpeed * speedBoostMultiplier;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v) + fwd * impulse;
+        float max = maxSpeed * speedBoostMultiplier;
         if (p.magnitude > max) p = p.normalized * max;
         rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
@@ -564,13 +617,13 @@ public sealed class BallMovementMotor : MonoBehaviour
             return;
         }
 
-        float   newTimer = Mathf.Max(0f, impactState.RecoveryTimer - Time.fixedDeltaTime);
-        Vector3 newVel   = impactState.Velocity;
+        float newTimer = Mathf.Max(0f, impactState.RecoveryTimer - Time.fixedDeltaTime);
+        Vector3 newVel = impactState.Velocity;
 
         if (newVel.sqrMagnitude > 0.0001f)
         {
             float n = Mathf.MoveTowards(newVel.magnitude, 0f, impactVelocityDecay * Time.fixedDeltaTime);
-            newVel  = newVel.normalized * n;
+            newVel = newVel.normalized * n;
         }
         else
         {
@@ -582,7 +635,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void ApplyImpactVelocity()
     {
-        Vector3 c         = rb.linearVelocity;
+        Vector3 c = rb.linearVelocity;
         rb.linearVelocity = new Vector3(impactState.Velocity.x, c.y, impactState.Velocity.z);
     }
 
@@ -593,9 +646,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// </summary>
     private void ApplySteering()
     {
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
+        float speed = p.magnitude;
         if (speed <= stopThreshold) return;
 
         Vector3 targetFwd = rotationController != null
@@ -606,10 +659,10 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (targetFwd.sqrMagnitude < 0.0001f) return;
         targetFwd.Normalize();
 
-        Vector3 currentDir    = p / speed;
-        float   angleDelta    = Vector3.Angle(currentDir, targetFwd);
-        float   normAngle     = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
-        float   effectiveRate = steeringDegreesPerSecond * Mathf.Pow(normAngle, steeringResponseExponent);
+        Vector3 currentDir = p / speed;
+        float angleDelta = Vector3.Angle(currentDir, targetFwd);
+        float normAngle = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
+        float effectiveRate = steeringDegreesPerSecond * Mathf.Pow(normAngle, steeringResponseExponent);
 
         // Reducción de control aéreo cuando la bola no está en el suelo.
         if (groundSensor != null && !groundSensor.IsGrounded)
@@ -620,7 +673,7 @@ public sealed class BallMovementMotor : MonoBehaviour
             effectiveRate * Mathf.Deg2Rad * Time.fixedDeltaTime,
             0f);
 
-        Vector3 newVel    = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
+        Vector3 newVel = ResolveBlockedVelocity(new Vector3(steered.x * speed, v.y, steered.z * speed));
         rb.linearVelocity = newVel;
     }
 
@@ -628,9 +681,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (joystickBrakeDeceleration <= 0f) return;
 
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
+        float speed = p.magnitude;
 
         if (speed <= stopThreshold)
         {
@@ -646,9 +699,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (maintainCurrentSpeed) return;
 
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
+        float speed = p.magnitude;
 
         if (speed <= stopThreshold)
         {
@@ -657,14 +710,51 @@ public sealed class BallMovementMotor : MonoBehaviour
         }
 
         float friction = passiveFriction * inertiaFrictionMultiplier;
-        float ns       = Mathf.MoveTowards(speed, 0f, friction * Time.fixedDeltaTime);
+        float ns = Mathf.MoveTowards(speed, 0f, friction * Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(p.normalized.x * ns, v.y, p.normalized.z * ns);
+    }
+
+    /// <summary>
+    /// Aplica el impulso del joystick virtual para alcanzar la velocidad objetivo.
+    /// Solo actúa cuando targetSpeed &gt; currentSpeed (acelerando).
+    /// Cuando la bola está por encima del objetivo, la fricción la desacelera sola.
+    ///
+    /// La lógica es: joystickTargetSpeed - CurrentSpeed = déficit de velocidad.
+    /// Aplicar ese déficit como impulso en la dirección del joystick lleva la velocidad
+    /// exactamente al objetivo en ese frame (antes de que la fricción del siguiente frame
+    /// vuelva a reducirla ligeramente).
+    /// </summary>
+    private void ApplyJoystickAcceleration()
+    {
+        if (joystickTargetSpeed <= 0f || joystickTargetDirection.sqrMagnitude < 0.0001f)
+            return;
+
+        float current = CurrentSpeed;
+        if (current >= joystickTargetSpeed) return;
+
+        float delta = joystickTargetSpeed - current;
+        ApplyImpulseInDirection(joystickTargetDirection, delta);
+    }
+
+    /// <summary>
+    /// Aplica el freno proporcional del joystick virtual.
+    /// Solo actúa cuando joystickBrakeStrength > 0 (modo freno activo).
+    /// Se combina con passiveFriction: ambos actúan juntos para desacelerar la bola.
+    /// El freno escala con joystickBrakeStrength:
+    ///   brakeAmount = joystickBrakeStrength × maxJoystickBrakeForce × dt
+    /// </summary>
+    private void ApplyJoystickBraking()
+    {
+        if (joystickBrakeStrength <= 0f) return;
+
+        float brakeAmount = joystickBrakeStrength * maxJoystickBrakeForce * Time.fixedDeltaTime;
+        ApplyBrakePulse(brakeAmount);
     }
 
     private void ApplyForcedStop()
     {
-        Vector3 v  = rb.linearVelocity;
-        Vector3 p  = GetPlanarVelocity(v);
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
         Vector3 np = Vector3.MoveTowards(p, Vector3.zero, forcedStopState.Deceleration * Time.fixedDeltaTime);
         rb.linearVelocity = new Vector3(np.x, v.y, np.z);
     }
@@ -694,9 +784,9 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         if (!maintainCurrentSpeed) return;
 
-        Vector3 v     = rb.linearVelocity;
-        Vector3 p     = GetPlanarVelocity(v);
-        float   speed = p.magnitude;
+        Vector3 v = rb.linearVelocity;
+        Vector3 p = GetPlanarVelocity(v);
+        float speed = p.magnitude;
 
         // Si la velocidad actual supera el target, actualizar el target.
         // Permite que el jugador acelere por encima del valor de captura inicial.
@@ -704,7 +794,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         if (maintainedSpeedTarget > stopThreshold && p.sqrMagnitude > 0.0001f)
         {
-            p                 = p.normalized * maintainedSpeedTarget;
+            p = p.normalized * maintainedSpeedTarget;
             rb.linearVelocity = new Vector3(p.x, v.y, p.z);
         }
     }
@@ -732,7 +822,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     private float ResolveSlopeAdjustedMax(Vector3 dir, float max)
     {
         float v = dir.y;
-        if (v > 0f) return max * Mathf.Lerp(1f, uphillSpeedFactor,   Mathf.Clamp01(v));
+        if (v > 0f) return max * Mathf.Lerp(1f, uphillSpeedFactor, Mathf.Clamp01(v));
         if (v < 0f) return Mathf.Min(
             max * Mathf.Lerp(1f, downhillSpeedFactor, Mathf.Clamp01(-v)),
             max * downhillSpeedFactor);
@@ -757,8 +847,8 @@ public sealed class BallMovementMotor : MonoBehaviour
         if (n.sqrMagnitude < 0.0001f) return desired;
         n.Normalize();
 
-        Vector3 dp   = GetPlanarVelocity(desired);
-        float   into = Vector3.Dot(dp, -n);
+        Vector3 dp = GetPlanarVelocity(desired);
+        float into = Vector3.Dot(dp, -n);
 
         // Ignorar componentes "into" mínimas por ruido de punto flotante.
         if (into <= 0.001f) return desired;
@@ -779,7 +869,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
     private void CancelPlanarVelocity()
     {
-        Vector3 v         = rb.linearVelocity;
+        Vector3 v = rb.linearVelocity;
         rb.linearVelocity = new Vector3(0f, v.y, 0f);
     }
 
