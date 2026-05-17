@@ -26,13 +26,25 @@ public static class TrackChunkInstantiator
         TrackGenerationProfile visualProfile)
     {
         if (surfaceChunks == null || surfaceChunks.Count == 0 || parent == null || visualProfile == null)
-        {
             return;
-        }
 
         for (int i = 0; i < surfaceChunks.Count; i++)
         {
-            CreateChunkObject(surfaceChunks[i], parent, in settings, visualProfile);
+            TrackSurfaceChunkDefinition chunk  = surfaceChunks[i];
+            bool                        isRail = chunk.StructureType == TrackStructureType.RailTrack;
+
+            // Detectar si es el primero o último de su secuencia de raíles.
+            // Un chunk rail es "primero" si el anterior no es rail (o no existe).
+            // Es "último" si el siguiente no es rail (o no existe).
+            // Para chunks sólidos estas flags no tienen efecto (RailMeshBuilder las ignora).
+            bool isFirstInRailSequence = !isRail || i == 0
+                || surfaceChunks[i - 1].StructureType != TrackStructureType.RailTrack;
+
+            bool isLastInRailSequence = !isRail || i == surfaceChunks.Count - 1
+                || surfaceChunks[i + 1].StructureType != TrackStructureType.RailTrack;
+
+            CreateChunkObject(chunk, parent, in settings, visualProfile,
+                isFirstInRailSequence, isLastInRailSequence);
         }
     }
 
@@ -44,10 +56,13 @@ public static class TrackChunkInstantiator
         TrackSurfaceChunkDefinition chunk,
         Transform parent,
         in TrackChunkInstantiatorSettings settings,
-        TrackGenerationProfile visualProfile)
+        TrackGenerationProfile visualProfile,
+        bool isFirstInRailSequence,
+        bool isLastInRailSequence)
     {
         TrackMeshBuilder.TrackMeshBuildResult result =
-            TrackMeshBuilder.BuildChunkMesh(chunk, visualProfile);
+            TrackMeshBuilder.BuildChunkMesh(chunk, visualProfile,
+                isFirstInRailSequence, isLastInRailSequence);
 
         GameObject chunkObject = new GameObject($"{settings.ChunkObjectNamePrefix}{chunk.ChunkIndex:D2}");
 

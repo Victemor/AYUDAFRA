@@ -180,7 +180,11 @@ public sealed class BallMovementMotor : MonoBehaviour
     private ImpactState impactState;
     private ForcedStopState forcedStopState;
 
-    private float speedBoostMultiplier = 1f;
+    /// <summary>
+    /// Velocidad extra en m/s sumada al máximo base mientras la bola está en una SpeedBoostZone.
+    /// 0 = sin boost activo. Siempre >= 0.
+    /// </summary>
+    private float speedBoostAmount = 0f;
     private float jumpBypassTimer;
 
     private bool maintainCurrentSpeed;
@@ -201,6 +205,12 @@ public sealed class BallMovementMotor : MonoBehaviour
     private float inertiaFrictionMultiplier = 1f;
     private float inertiaGroundStickMultiplier = 1f;
 
+    /// <summary>
+    /// Multiplicador sobre steeringDegreesPerSecond aplicado por el power-up ReducedInertia.
+    /// 1 = steering normal. Valores > 1 hacen los giros más reactivos a alta velocidad.
+    /// </summary>
+    private float inertiaSteeringBoostMultiplier = 1f;
+
     #endregion
 
     #region Properties
@@ -214,9 +224,15 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// <summary>
     /// Velocidad máxima configurada en m/s.
     /// Usada por sistemas externos (cámara, UI) para normalizar la velocidad actual.
-    /// El techo efectivo en runtime puede ser mayor si hay un <see cref="speedBoostMultiplier"/> activo.
+    /// El techo efectivo en runtime puede ser mayor si hay un <see cref="speedBoostAmount"/> activo.
     /// </summary>
     public float MaxSpeed => maxSpeed;
+
+    /// <summary>
+    /// Velocidad máxima efectiva incluyendo el boost de zona activo.
+    /// Equivale a <see cref="MaxSpeed"/> cuando no hay boost.
+    /// </summary>
+    public float EffectiveMaxSpeed => maxSpeed + speedBoostAmount;
 
     /// <summary>
     /// Forward lógico más reciente con velocidad suficiente para ser válido.
@@ -405,15 +421,16 @@ public sealed class BallMovementMotor : MonoBehaviour
     }
 
     /// <summary>
-    /// Aplica multiplicadores de inertia reduction desde el power-up ReducedInertia.
-    /// Reduce la fricción pasiva y la adhesión al suelo durante el efecto activo.
+    /// Aplica los modificadores del power-up Inercia Reducida al motor.
     /// </summary>
-    /// <param name="frictionMult">Multiplicador sobre passiveFriction [0–1]. 0.3 = 70% menos fricción.</param>
-    /// <param name="groundStickMult">Multiplicador sobre groundStickForce [0–1]. 0.4 = 60% menos adhesión.</param>
-    public void SetInertiaReduction(float frictionMult, float groundStickMult)
+    /// <param name="frictionMult">Multiplicador sobre fricción pasiva [0 = sin fricción, 1 = normal].</param>
+    /// <param name="groundStickMult">Multiplicador sobre adhesión al suelo [0 = sin adhesión, 1 = normal].</param>
+    /// <param name="steeringBoostMult">Multiplicador sobre velocidad de steering [1 = normal, >1 = más reactivo].</param>
+    public void SetInertiaReduction(float frictionMult, float groundStickMult, float steeringBoostMult)
     {
-        inertiaFrictionMultiplier = Mathf.Clamp01(frictionMult);
-        inertiaGroundStickMultiplier = Mathf.Clamp01(groundStickMult);
+        inertiaFrictionMultiplier = frictionMult;
+        inertiaGroundStickMultiplier = groundStickMult;
+        inertiaSteeringBoostMultiplier = steeringBoostMult;
     }
 
     /// <summary>Revierte los multiplicadores de inertia reduction a sus valores neutros.</summary>
@@ -421,6 +438,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     {
         inertiaFrictionMultiplier = 1f;
         inertiaGroundStickMultiplier = 1f;
+        inertiaSteeringBoostMultiplier = 1f;
     }
 
     #endregion
@@ -521,7 +539,7 @@ public sealed class BallMovementMotor : MonoBehaviour
 
         Vector3 v = rb.linearVelocity;
         Vector3 p = GetPlanarVelocity(v) + worldDirection * speed;
-        float max = maxSpeed * speedBoostMultiplier;
+        float max = maxSpeed + speedBoostAmount;
         if (p.magnitude > max) p = p.normalized * max;
         rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
@@ -563,7 +581,7 @@ public sealed class BallMovementMotor : MonoBehaviour
     /// Aplica un impulso directo en la dirección del forward actual sin pasar por el acumulador.
     /// Usado por <c>JoystickMovementController</c> para el arranque desde cero y por
     /// <c>SwipeDirectionRouter</c> para el micro-kick de redirección con swipe.
-    /// No supera el techo de velocidad efectivo (maxSpeed × speedBoostMultiplier).
+    /// No supera el techo de velocidad efectivo (maxSpeed + speedBoostAmount).
     /// </summary>
     public void ApplyJoystickKickstart(float impulse)
     {
@@ -572,7 +590,7 @@ public sealed class BallMovementMotor : MonoBehaviour
         Vector3 fwd = GetMovementForward();
         Vector3 v = rb.linearVelocity;
         Vector3 p = GetPlanarVelocity(v) + fwd * impulse;
-        float max = maxSpeed * speedBoostMultiplier;
+        float max = maxSpeed + speedBoostAmount;
         if (p.magnitude > max) p = p.normalized * max;
         rb.linearVelocity = new Vector3(p.x, v.y, p.z);
     }
@@ -582,21 +600,22 @@ public sealed class BallMovementMotor : MonoBehaviour
     #region Public API — Speed Boost
 
     /// <summary>
-    /// Aumenta el techo de velocidad por el multiplicador dado.
-    /// Llamado por <c>SpeedBoostZone</c> al entrar a la zona.
+    /// Activa el boost de velocidad de zona sumando <paramref name="amount"/> m/s al máximo base.
+    /// Llamado por <see cref="SpeedBoostZone"/> al entrar a la zona.
     /// </summary>
-    public void SetSpeedBoostMultiplier(float multiplier)
+    /// <param name="amount">Velocidad extra en m/s. Siempre >= 0.</param>
+    public void SetSpeedBoost(float amount)
     {
-        speedBoostMultiplier = Mathf.Max(1f, multiplier);
+        speedBoostAmount = Mathf.Max(0f, amount);
     }
 
     /// <summary>
     /// Restaura el techo de velocidad al valor base.
-    /// Llamado por <c>SpeedBoostZone</c> al salir de la zona.
+    /// Llamado por <see cref="SpeedBoostZone"/> al salir de la zona.
     /// </summary>
     public void ClearSpeedBoost()
     {
-        speedBoostMultiplier = 1f;
+        speedBoostAmount = 0f;
     }
 
     #endregion
@@ -662,7 +681,12 @@ public sealed class BallMovementMotor : MonoBehaviour
         Vector3 currentDir = p / speed;
         float angleDelta = Vector3.Angle(currentDir, targetFwd);
         float normAngle = Mathf.Clamp01(angleDelta / steeringAngleForFullRate);
-        float effectiveRate = steeringDegreesPerSecond * Mathf.Pow(normAngle, steeringResponseExponent);
+        // inertiaSteeringBoostMultiplier = 1 en condiciones normales.
+        // El power-up ReducedInertia lo eleva (p.ej. 1.5×) para que los giros
+        // a alta velocidad sean menos restrictivos durante su duración.
+        float effectiveRate = steeringDegreesPerSecond
+            * inertiaSteeringBoostMultiplier
+            * Mathf.Pow(normAngle, steeringResponseExponent);
 
         // Reducción de control aéreo cuando la bola no está en el suelo.
         if (groundSensor != null && !groundSensor.IsGrounded)

@@ -56,7 +56,9 @@ public static class TrackMeshBuilder
     /// </summary>
     public static TrackMeshBuildResult BuildChunkMesh(
         TrackSurfaceChunkDefinition chunk,
-        TrackGenerationProfile generationProfile)
+        TrackGenerationProfile generationProfile,
+        bool isFirstInRailSequence = true,
+        bool isLastInRailSequence = true)
     {
         if (chunk == null || chunk.Samples == null || chunk.Samples.Count < 2)
         {
@@ -72,7 +74,8 @@ public static class TrackMeshBuilder
         switch (chunk.StructureType)
         {
             case TrackStructureType.RailTrack:
-                return BuildRailChunk(chunk, generationProfile);
+                return BuildRailChunk(chunk, generationProfile,
+                    isFirstInRailSequence, isLastInRailSequence);
 
             case TrackStructureType.SolidTrack:
             default:
@@ -272,9 +275,12 @@ public static class TrackMeshBuilder
     /// </summary>
     private static TrackMeshBuildResult BuildRailChunk(
         TrackSurfaceChunkDefinition chunk,
-        TrackGenerationProfile generationProfile)
+        TrackGenerationProfile generationProfile,
+        bool isFirstInRailSequence,
+        bool isLastInRailSequence)
     {
-        Mesh mesh = RailMeshBuilder.BuildRailMesh(chunk, generationProfile);
+        Mesh mesh = RailMeshBuilder.BuildRailMesh(chunk, generationProfile,
+            isFirstInRailSequence, isLastInRailSequence);
 
         return new TrackMeshBuildResult(
             mesh,

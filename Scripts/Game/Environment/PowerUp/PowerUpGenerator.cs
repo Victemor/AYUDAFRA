@@ -39,12 +39,6 @@ public sealed class PowerUpGenerator : MonoBehaviour
              "y su longitud base debe ser 1 unidad.")]
     private GameObject speedBoostZonePrefab;
 
-    [SerializeField]
-    [Tooltip("Prefab base para los pickups coleccionables. " +
-             "Debe tener un CollectiblePowerUp y un Collider marcado como IsTrigger. " +
-             "PowerUpGenerator le asigna el CollectiblePowerUpData correcto al instanciarlo.")]
-    private GameObject collectiblePickupPrefab;
-
     [Header("Reglas de Generación — SpeedBoost")]
     [SerializeField]
     [Tooltip("Permite generar SpeedBoost en pendientes ascendentes sobre pista sólida.")]
@@ -93,9 +87,10 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
     [Header("Coleccionables")]
     [SerializeField]
-    [Tooltip("Lista de ScriptableObjects que definen los tipos de power-ups coleccionables " +
-             "disponibles. Cada uno tiene su propia probabilidad, nivel mínimo y curva de progresión.")]
-    private CollectiblePowerUpData[] collectiblePowerUps;
+    [Tooltip("Lista de power-ups coleccionables disponibles para spawnear en el track.\n" +
+             "Cada entrada apunta a su prefab con CollectiblePowerUpBase y define\n" +
+             "cuándo y con qué probabilidad aparece.")]
+    private CollectiblePowerUpSpawnEntry[] collectiblePowerUps;
 
     [SerializeField]
     [Min(0)]
@@ -327,9 +322,7 @@ public sealed class PowerUpGenerator : MonoBehaviour
         float                                usableStart,
         float                                usableEnd)
     {
-        if (collectiblePickupPrefab == null) return 0;
-
-        List<CollectiblePowerUpData> eligible = GetEligibleCollectibles(levelIndex, progressionT);
+        List<CollectiblePowerUpSpawnEntry> eligible = GetEligibleCollectibles(levelIndex, progressionT);
         if (eligible.Count == 0) return 0;
 
         // Determinar cuántos colocar este nivel.
@@ -359,23 +352,22 @@ public sealed class PowerUpGenerator : MonoBehaviour
             if (candidateDistance - lastPlaced < minDistanceBetweenCollectibles) continue;
 
             // Seleccionar tipo elegible ponderado.
-            CollectiblePowerUpData selectedData = PickWeightedCollectible(eligible, random, progressionT);
-            if (selectedData == null) continue;
+            if (!TryPickWeightedCollectible(eligible, random, progressionT, out CollectiblePowerUpSpawnEntry selectedEntry)) continue;
 
             // Evaluar probabilidad individual del tipo seleccionado.
-            if (random.NextDouble() > selectedData.EvaluateSpawnChance(progressionT)) continue;
+            if (random.NextDouble() > selectedEntry.EvaluateSpawnChance(progressionT)) continue;
 
             // Verificar sección sólida.
             if (!IsValidSolidDistanceForCollectible(sections, candidateDistance)) continue;
 
             // Intentar reservar espacio.
             float acceptedDistance = TryReserveCollectibleSlot(
-                reservationMap, selectedData, candidateDistance,
+                reservationMap, selectedEntry, candidateDistance,
                 usableStart, usableEnd, random, sections);
 
             if (acceptedDistance < 0f) continue;
 
-            PlaceCollectible(map, acceptedDistance, selectedData);
+            PlaceCollectible(map, acceptedDistance, selectedEntry);
             lastPlaced = acceptedDistance;
             placed++;
         }
@@ -389,7 +381,7 @@ public sealed class PowerUpGenerator : MonoBehaviour
     /// </summary>
     private float TryReserveCollectibleSlot(
         TrackSpawnReservationMap reservationMap,
-        CollectiblePowerUpData   data,
+        CollectiblePowerUpSpawnEntry entry,
         float                    preferredDistance,
         float                    usableStart,
         float                    usableEnd,
@@ -418,8 +410,8 @@ public sealed class PowerUpGenerator : MonoBehaviour
             if (reservationMap.TryReserve(
                     dist,
                     0f,
-                    data.ReservationLength,
-                    data.ReservationWidth,
+                    entry.ReservationLength,
+                    entry.ReservationWidth,
                     TrackSpawnPriority.Low))
             {
                 return dist;
@@ -436,22 +428,28 @@ public sealed class PowerUpGenerator : MonoBehaviour
     /// Esto resuelve el problema del pivot: una esfera tiene su pivot en el centro,
     /// por lo que sin alineación quedaría enterrada la mitad en el suelo.
     /// </summary>
-    private void PlaceCollectible(TrackRuntimeMap map, float distance, CollectiblePowerUpData data)
+    private void PlaceCollectible(TrackRuntimeMap map, float distance, CollectiblePowerUpSpawnEntry entry)
     {
-        TrackSample sample = map.PathSampler.SampleAtDistance(distance);
+        if (entry.Prefab == null) return;
 
-        // Posición inicial sobre la superficie (con offset de seguridad).
-        Vector3    position = sample.Position + Vector3.up * data.SurfaceOffset;
+        TrackSample sample = map.PathSampler.SampleAtDistance(distance);
         Quaternion rotation = Quaternion.LookRotation(ResolveSafeForward(sample.Forward), Vector3.up);
 
-        GameObject instance = Instantiate(collectiblePickupPrefab, position, rotation, generatedRoot);
-        instance.name = $"Collectible_{data.Type}_{distance:F0}m";
+        // Instanciar a altura provisional; el offset real se lee del componente.
+        GameObject instance = Instantiate(
+            entry.Prefab,
+            sample.Position + Vector3.up * 0.5f,
+            rotation,
+            generatedRoot);
+        instance.name = $"Collectible_{entry.Prefab.name}_{distance:F0}m";
 
-        // Alinear la base del collider con la superficie para cualquier forma de pivot.
-        AlignCollectibleBottomToSurface(instance, sample.Position.y + data.SurfaceOffset);
+        // El SurfaceOffset correcto vive en el componente del prefab,
+        // permitiendo que cada tipo de power-up tenga su propia altura de spawn.
+        CollectiblePowerUpBase powerUp = instance.GetComponent<CollectiblePowerUpBase>();
+        float surfaceOffset = powerUp != null ? powerUp.SurfaceOffset : 0.5f;
 
-        CollectiblePowerUp pickup = instance.GetComponent<CollectiblePowerUp>();
-        pickup?.Initialize(data);
+        instance.transform.position = sample.Position + Vector3.up * surfaceOffset;
+        AlignCollectibleBottomToSurface(instance, sample.Position.y + surfaceOffset);
     }
 
     /// <summary>
@@ -475,19 +473,19 @@ public sealed class PowerUpGenerator : MonoBehaviour
     /// <summary>
     /// Filtra y devuelve los coleccionables elegibles para el nivel y progresión actuales.
     /// </summary>
-    private List<CollectiblePowerUpData> GetEligibleCollectibles(int levelIndex, float progressionT)
+    private List<CollectiblePowerUpSpawnEntry> GetEligibleCollectibles(int levelIndex, float progressionT)
     {
-        var eligible = new List<CollectiblePowerUpData>();
+        var eligible = new List<CollectiblePowerUpSpawnEntry>();
 
         if (collectiblePowerUps == null) return eligible;
 
         for (int i = 0; i < collectiblePowerUps.Length; i++)
         {
-            CollectiblePowerUpData data = collectiblePowerUps[i];
-            if (data == null) continue;
-            if (!data.IsEligibleForLevel(levelIndex)) continue;
-            if (data.EvaluateSpawnChance(progressionT) <= 0f) continue;
-            eligible.Add(data);
+            CollectiblePowerUpSpawnEntry entry = collectiblePowerUps[i];
+            if (entry.Prefab == null) continue;
+            if (!entry.IsEligibleForLevel(levelIndex)) continue;
+            if (entry.EvaluateSpawnChance(progressionT) <= 0f) continue;
+            eligible.Add(entry);
         }
 
         return eligible;
@@ -495,20 +493,30 @@ public sealed class PowerUpGenerator : MonoBehaviour
 
     /// <summary>
     /// Selecciona un coleccionable ponderado por spawnWeight × spawnChance del nivel actual.
+    /// Usa patrón bool + out porque <see cref="CollectiblePowerUpSpawnEntry"/> es un struct
+    /// y no puede ser null. Devuelve <c>false</c> si la lista está vacía o el peso total es cero.
     /// </summary>
-    private static CollectiblePowerUpData PickWeightedCollectible(
-        List<CollectiblePowerUpData> eligible,
-        System.Random                random,
-        float                        progressionT)
+    private static bool TryPickWeightedCollectible(
+        List<CollectiblePowerUpSpawnEntry> eligible,
+        System.Random                      random,
+        float                              progressionT,
+        out CollectiblePowerUpSpawnEntry   selected)
     {
-        if (eligible.Count == 0) return null;
-        if (eligible.Count == 1) return eligible[0];
+        selected = default;
+
+        if (eligible.Count == 0) return false;
+
+        if (eligible.Count == 1)
+        {
+            selected = eligible[0];
+            return true;
+        }
 
         float totalWeight = 0f;
         for (int i = 0; i < eligible.Count; i++)
             totalWeight += eligible[i].SpawnWeight * eligible[i].EvaluateSpawnChance(progressionT);
 
-        if (totalWeight <= 0f) return null;
+        if (totalWeight <= 0f) return false;
 
         float roll    = (float)random.NextDouble() * totalWeight;
         float current = 0f;
@@ -516,10 +524,16 @@ public sealed class PowerUpGenerator : MonoBehaviour
         for (int i = 0; i < eligible.Count; i++)
         {
             current += eligible[i].SpawnWeight * eligible[i].EvaluateSpawnChance(progressionT);
-            if (roll <= current) return eligible[i];
+            if (roll <= current)
+            {
+                selected = eligible[i];
+                return true;
+            }
         }
 
-        return eligible[eligible.Count - 1];
+        // Fallback: cubre imprecisiones de punto flotante en la acumulación de pesos.
+        selected = eligible[eligible.Count - 1];
+        return true;
     }
 
     /// <summary>
@@ -698,15 +712,13 @@ public sealed class PowerUpGenerator : MonoBehaviour
             return false;
         }
 
-        bool hasSpeedBoost   = speedBoostZonePrefab    != null;
-        bool hasCollectibles = collectiblePickupPrefab  != null
-            && collectiblePowerUps != null
-            && collectiblePowerUps.Length > 0;
+        bool hasSpeedBoost = speedBoostZonePrefab != null;
+        bool hasCollectibles = collectiblePowerUps != null && collectiblePowerUps.Length > 0;
 
         if (!hasSpeedBoost && !hasCollectibles)
         {
             Debug.LogWarning(
-                "[POWER UPS] Ni speedBoostZonePrefab ni collectiblePickupPrefab están asignados.", this);
+                "[POWER UPS] Ni speedBoostZonePrefab ni collectiblePowerUps están asignados.", this);
             return false;
         }
 
@@ -814,8 +826,6 @@ public sealed class PowerUpGenerator : MonoBehaviour
         speedBoostLeadInDistance         = Mathf.Max(0f, speedBoostLeadInDistance);
         speedBoostSegmentLength          = Mathf.Max(0.25f, speedBoostSegmentLength);
         minimumSpeedBoostSegmentVisualLength = Mathf.Max(0.1f, minimumSpeedBoostSegmentVisualLength);
-
-
 
         minCollectiblesPerLevel        = Mathf.Max(0, minCollectiblesPerLevel);
         maxCollectiblesPerLevel        = Mathf.Max(minCollectiblesPerLevel, maxCollectiblesPerLevel);

@@ -878,8 +878,8 @@ public sealed class TrackBarrierGenerator : MonoBehaviour
     {
         List<TrackLayoutSamplePoint> samples = new List<TrackLayoutSamplePoint>();
 
-        TrackLayoutSamplePoint startSample = SampleChunkAtDistance(chunk, Mathf.Max(chunk.StartDistance, clipStart));
-        TrackLayoutSamplePoint endSample = SampleChunkAtDistance(chunk, Mathf.Min(chunk.EndDistance, clipEnd));
+        TrackLayoutSamplePoint startSample = TrackChunkSampler.SampleAtDistance(chunk, Mathf.Max(chunk.StartDistance, clipStart));
+        TrackLayoutSamplePoint endSample = TrackChunkSampler.SampleAtDistance(chunk, Mathf.Min(chunk.EndDistance, clipEnd));
 
         AddSampleIfDistinct(samples, startSample);
 
@@ -903,63 +903,6 @@ public sealed class TrackBarrierGenerator : MonoBehaviour
         AddSampleIfDistinct(samples, endSample);
 
         return samples;
-    }
-
-    private static TrackLayoutSamplePoint SampleChunkAtDistance(
-        TrackSurfaceChunkDefinition chunk,
-        float distance)
-    {
-        IReadOnlyList<TrackLayoutSamplePoint> samples = chunk.Samples;
-
-        if (samples == null || samples.Count == 0)
-        {
-            return default;
-        }
-
-        if (distance <= samples[0].Distance)
-        {
-            return samples[0];
-        }
-
-        int lastIndex = samples.Count - 1;
-
-        if (distance >= samples[lastIndex].Distance)
-        {
-            return samples[lastIndex];
-        }
-
-        for (int i = 0; i < samples.Count - 1; i++)
-        {
-            TrackLayoutSamplePoint a = samples[i];
-            TrackLayoutSamplePoint b = samples[i + 1];
-
-            if (distance < a.Distance || distance > b.Distance)
-            {
-                continue;
-            }
-
-            float length = Mathf.Max(0.0001f, b.Distance - a.Distance);
-            float t = Mathf.Clamp01((distance - a.Distance) / length);
-
-            Vector3 position = Vector3.Lerp(a.Position, b.Position, t);
-            Vector3 forward = Vector3.Slerp(a.Forward, b.Forward, t).normalized;
-            Vector3 right = Vector3.Slerp(a.Right, b.Right, t).normalized;
-            float width = Mathf.Lerp(a.Width, b.Width, t);
-            float railSeparation = Mathf.Lerp(a.RailSeparation, b.RailSeparation, t);
-            float railWidth = Mathf.Lerp(a.RailWidth, b.RailWidth, t);
-
-            return new TrackLayoutSamplePoint(
-                position,
-                forward,
-                right,
-                width,
-                distance,
-                a.StructureType,
-                railSeparation,
-                railWidth);
-        }
-
-        return samples[lastIndex];
     }
 
     private static void AddSampleIfDistinct(

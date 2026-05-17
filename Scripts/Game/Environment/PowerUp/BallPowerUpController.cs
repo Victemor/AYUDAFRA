@@ -2,31 +2,49 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// Gestiona los efectos activos de power-ups coleccionables sobre la bola.
+/// Coordinador de efectos de power-up activos sobre la bola.
 ///
 /// Responsabilidades:
-/// - Recibir power-ups mediante <see cref="Collect"/>.
-/// - Mantener un timer independiente por tipo de efecto.
-/// - Aplicar y revertir los efectos en <see cref="BallMovementMotor"/> (Reduced Inertia).
-/// - Atraer monedas cercanas en <c>FixedUpdate</c> mientras el imán está activo.
-/// - Exponer eventos para que la UI muestre el estado activo.
+/// - Recibir activaciones de efecto desde los pickups (<see cref="CollectiblePowerUpBase"/>).
+/// - Gestionar los timers de duración de cada efecto activo.
+/// - Delegar los modificadores de movimiento al <see cref="BallMovementMotor"/>.
+/// - Ejecutar la lógica de atracción del imán en cada FixedUpdate.
+/// - Notificar a sistemas externos (UI, audio) a través de eventos cuando un efecto
+///   comienza o expira.
 ///
-/// Recolectar el mismo tipo mientras está activo reinicia el timer (no acumula).
-/// Dos tipos distintos pueden estar activos simultáneamente.
+/// Diseño de extensibilidad:
+/// Para añadir un nuevo power-up:
+/// 1. Crear una subclase de <see cref="CollectiblePowerUpBase"/> con sus datos.
+/// 2. Añadir un método <c>ActivateXxx</c> público en este controlador.
+/// 3. Añadir el timer y la lógica de tick correspondiente.
+/// Este controlador no necesita conocer los prefabs ni la lógica de spawn.
 /// </summary>
-[RequireComponent(typeof(BallMovementMotor))]
 public sealed class BallPowerUpController : MonoBehaviour
 {
+    #region Constants
+
+    /// <summary>
+    /// Tamaño del buffer pre-allocado para OverlapSphereNonAlloc del imán.
+    /// Cubre el caso de hasta 32 monedas simultáneas en el radio de atracción.
+    /// Aumentar si los niveles generan densidades mayores.
+    /// </summary>
+    private const int MagnetBufferSize = 32;
+
+    #endregion
+
     #region Events
 
     /// <summary>
-    /// Disparado al recolectar un power-up. Parámetros: tipo, duración total.
-    /// Subscriptores típicos: UI de power-ups activos.
+    /// Disparado cuando un power-up es recolectado y su efecto comienza.
+    /// Parámetros: tipo de efecto, duración total en segundos.
+    /// Consumidores típicos: HUD (barra de duración), sistema de audio.
     /// </summary>
     public event Action<CollectiblePowerUpType, float> OnPowerUpCollected;
 
     /// <summary>
-    /// Disparado cuando el efecto de un power-up expira.
+    /// Disparado cuando el timer de un power-up llega a cero y el efecto termina.
+    /// Parámetro: tipo de efecto que expiró.
+    /// Consumidores típicos: HUD (ocultar indicador), sistema de audio.
     /// </summary>
     public event Action<CollectiblePowerUpType> OnPowerUpExpired;
 
@@ -48,26 +66,36 @@ public sealed class BallPowerUpController : MonoBehaviour
 
     #region Runtime
 
+    // — Timers de efectos activos —
+
     private float reducedInertiaTimer;
     private float magnetTimer;
 
-    private CollectiblePowerUpData activeInertiaData;
-    private CollectiblePowerUpData activeMagnetData;
+    // — Parámetros del imán activo —
+    // Guardados al activar para no depender de referencia externa durante el tick.
+
+    private float activeMagnetRadius;
+    private float activeMagnetAttractionSpeed;
+
+    // — Buffer pre-allocado para el imán —
+    // Se reutiliza en cada FixedUpdate para evitar GC allocation en hot path.
+
+    private readonly Collider[] _magnetBuffer = new Collider[MagnetBufferSize];
 
     #endregion
 
     #region Properties
 
-    /// <summary><c>true</c> mientras el efecto de Reduced Inertia está activo.</summary>
+    /// <summary><c>true</c> mientras el efecto de Inercia Reducida está activo.</summary>
     public bool IsReducedInertiaActive => reducedInertiaTimer > 0f;
 
-    /// <summary><c>true</c> mientras el efecto de imán está activo.</summary>
+    /// <summary><c>true</c> mientras el efecto de Imán está activo.</summary>
     public bool IsMagnetActive => magnetTimer > 0f;
 
-    /// <summary>Tiempo restante de Reduced Inertia en segundos.</summary>
+    /// <summary>Tiempo restante de Inercia Reducida en segundos.</summary>
     public float ReducedInertiaRemainingTime => reducedInertiaTimer;
 
-    /// <summary>Tiempo restante del imán en segundos.</summary>
+    /// <summary>Tiempo restante del Imán en segundos.</summary>
     public float MagnetRemainingTime => magnetTimer;
 
     /// <summary>Indica si el tipo de efecto indicado está actualmente activo.</summary>
@@ -121,50 +149,49 @@ public sealed class BallPowerUpController : MonoBehaviour
 
     #endregion
 
-    #region Public API
+    #region Public API — Activación de Efectos
 
     /// <summary>
-    /// Aplica el efecto del power-up indicado.
-    /// Si el mismo tipo ya está activo, reinicia su timer.
+    /// Activa el efecto de Imán.
+    /// Si el efecto ya está activo, reinicia su timer con la nueva duración.
+    /// Llamado por <see cref="PowerUpMagnet.ApplyEffect"/>.
     /// </summary>
-    public void Collect(CollectiblePowerUpData powerUpData)
+    /// <param name="duration">Duración del efecto en segundos.</param>
+    /// <param name="radius">Radio de atracción en metros.</param>
+    /// <param name="attractionSpeed">Velocidad de movimiento de monedas en m/s.</param>
+    public void ActivateMagnet(float duration, float radius, float attractionSpeed)
     {
-        if (powerUpData == null) return;
+        activeMagnetRadius        = radius;
+        activeMagnetAttractionSpeed = attractionSpeed;
+        magnetTimer               = duration;
 
-        switch (powerUpData.Type)
-        {
-            case CollectiblePowerUpType.ReducedInertia:
-                ApplyReducedInertia(powerUpData);
-                break;
+        OnPowerUpCollected?.Invoke(CollectiblePowerUpType.Magnet, duration);
+    }
 
-            case CollectiblePowerUpType.Magnet:
-                ApplyMagnet(powerUpData);
-                break;
-        }
+    /// <summary>
+    /// Activa el efecto de Inercia Reducida.
+    /// Si el efecto ya está activo, reinicia su timer y reaplica los modificadores.
+    /// Llamado por <see cref="PowerUpReducedInertia.ApplyEffect"/>.
+    /// </summary>
+    /// <param name="duration">Duración del efecto en segundos.</param>
+    /// <param name="frictionMult">Multiplicador sobre la fricción pasiva [0 = sin fricción, 1 = normal].</param>
+    /// <param name="groundStickMult">Multiplicador sobre la adhesión al suelo [0 = sin adhesión, 1 = normal].</param>
+    /// <param name="steeringBoostMult">Multiplicador sobre la velocidad de steering [1 = normal, >1 = más reactivo].</param>
+    public void ActivateReducedInertia(
+        float duration,
+        float frictionMult,
+        float groundStickMult,
+        float steeringBoostMult)
+    {
+        reducedInertiaTimer = duration;
+        movementMotor?.SetInertiaReduction(frictionMult, groundStickMult, steeringBoostMult);
+
+        OnPowerUpCollected?.Invoke(CollectiblePowerUpType.ReducedInertia, duration);
     }
 
     #endregion
 
-    #region Effect Application
-
-    private void ApplyReducedInertia(CollectiblePowerUpData data)
-    {
-        activeInertiaData   = data;
-        reducedInertiaTimer = data.EffectDuration;
-        movementMotor?.SetInertiaReduction(data.FrictionMultiplier, data.GroundStickMultiplier);
-        OnPowerUpCollected?.Invoke(data.Type, data.EffectDuration);
-    }
-
-    private void ApplyMagnet(CollectiblePowerUpData data)
-    {
-        activeMagnetData = data;
-        magnetTimer      = data.EffectDuration;
-        OnPowerUpCollected?.Invoke(data.Type, data.EffectDuration);
-    }
-
-    #endregion
-
-    #region Tick
+    #region Tick — Timers
 
     private void TickReducedInertia()
     {
@@ -175,7 +202,6 @@ public sealed class BallPowerUpController : MonoBehaviour
         if (reducedInertiaTimer > 0f) return;
 
         reducedInertiaTimer = 0f;
-        activeInertiaData   = null;
         movementMotor?.ClearInertiaReduction();
         OnPowerUpExpired?.Invoke(CollectiblePowerUpType.ReducedInertia);
     }
@@ -188,38 +214,44 @@ public sealed class BallPowerUpController : MonoBehaviour
 
         if (magnetTimer > 0f) return;
 
-        magnetTimer      = 0f;
-        activeMagnetData = null;
+        magnetTimer                 = 0f;
+        activeMagnetRadius          = 0f;
+        activeMagnetAttractionSpeed = 0f;
         OnPowerUpExpired?.Invoke(CollectiblePowerUpType.Magnet);
     }
 
     #endregion
 
-    #region Magnet
+    #region Magnet Logic
 
     /// <summary>
     /// Mueve las monedas cercanas hacia la bola en cada FixedUpdate mientras el imán está activo.
-    /// La recolección real ocurre cuando la moneda entra en el trigger normal de la bola.
+    ///
+    /// Usa <c>OverlapSphereNonAlloc</c> con buffer pre-allocado para evitar GC allocation
+    /// en el hot path de FixedUpdate (50 Hz). La recolección real ocurre cuando la moneda
+    /// entra en el collider trigger normal de la bola.
+    ///
+    /// Las monedas no tienen Rigidbody, por lo que se mueve <c>Transform.position</c>
+    /// directamente sin conflicto con el physics engine.
     /// </summary>
     private void AttractCoins()
     {
-        if (activeMagnetData == null) return;
-
-        Collider[] nearby = Physics.OverlapSphere(
+        int count = Physics.OverlapSphereNonAlloc(
             transform.position,
-            activeMagnetData.MagnetRadius,
+            activeMagnetRadius,
+            _magnetBuffer,
             coinLayer,
             QueryTriggerInteraction.Collide);
 
-        float stepDistance = activeMagnetData.MagnetAttractionSpeed * Time.fixedDeltaTime;
+        float stepDistance = activeMagnetAttractionSpeed * Time.fixedDeltaTime;
 
-        for (int i = 0; i < nearby.Length; i++)
+        for (int i = 0; i < count; i++)
         {
-            if (nearby[i] == null) continue;
+            if (_magnetBuffer[i] == null) continue;
 
-            Transform coinTransform = nearby[i].transform;
-            Vector3 toCenter        = transform.position - coinTransform.position;
-            float   distance        = toCenter.magnitude;
+            Transform coinTransform = _magnetBuffer[i].transform;
+            Vector3   toCenter      = transform.position - coinTransform.position;
+            float     distance      = toCenter.magnitude;
 
             if (distance < 0.05f) continue;
 

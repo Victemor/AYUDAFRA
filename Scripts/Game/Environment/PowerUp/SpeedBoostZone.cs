@@ -1,13 +1,25 @@
 using UnityEngine;
 
 /// <summary>
-/// Zona de aceleración. Mientras la bola esté dentro del trigger,
-/// puede superar su límite de velocidad normal por el multiplicador configurado.
+/// Zona de aceleración sobre el track.
+///
+/// Mientras la bola esté dentro del trigger, su velocidad máxima se incrementa
+/// en <see cref="speedBoostAmount"/> m/s adicionales por encima del máximo base
+/// configurado en <see cref="BallMovementMotor"/>. Al salir, el máximo vuelve al valor normal.
+///
+/// Ejemplo: si la velocidad máxima base es 12 m/s y <see cref="speedBoostAmount"/> es 5,
+/// la bola puede alcanzar hasta 17 m/s dentro de la zona.
+///
+/// Diseño del boost como suma aditiva (no multiplicador):
+/// La suma da al diseñador un control directo e intuitivo sobre cuántos m/s extra
+/// aporta la zona, independientemente de la velocidad base configurada en el motor.
+/// Un multiplicador hace que el delta de velocidad real cambie cada vez que se ajusta
+/// la velocidad base, lo que genera iteraciones lentas de tuning.
 ///
 /// El prefab de esta zona debe incluir:
 /// - Una malla visual del camino elevado.
-/// - Un collider físico (no trigger) que sirva de suelo para la bola.
-/// - Este trigger volumétrico que abarca toda la zona.
+/// - Un Collider físico (no trigger) que sirva de suelo para la bola.
+/// - Este trigger volumétrico que abarca toda la zona elevada.
 /// </summary>
 public sealed class SpeedBoostZone : MonoBehaviour
 {
@@ -15,10 +27,17 @@ public sealed class SpeedBoostZone : MonoBehaviour
 
     [Header("Configuración")]
     [SerializeField]
-    [Tooltip("Multiplicador de velocidad máxima mientras la bola está en la zona.\n" +
-             "Ejemplo: 1.5 → puede llegar a 1.5× la velocidad normal.")]
-    [Range(1f, 3f)]
-    private float speedBoostMultiplier = 1.5f;
+    [Tooltip("Velocidad extra en m/s que se suma al máximo base del motor mientras la bola está en la zona.\n" +
+             "Ejemplo: máximo base = 12 m/s, speedBoostAmount = 5 → máximo en zona = 17 m/s.\n" +
+             "Rango recomendado: 3 – 8 m/s.")]
+    [Min(0f)]
+    private float speedBoostAmount = 5f;
+
+    [Header("Debug")]
+    [SerializeField]
+    [Tooltip("Si está activo, imprime logs de entrada y salida de la zona en la consola.\n" +
+             "Desactivar en builds de producción.")]
+    private bool enableDebugLogs;
 
     #endregion
 
@@ -26,47 +45,41 @@ public sealed class SpeedBoostZone : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!other.CompareTag("Player"))
+        // Detectamos al jugador por componente para ser consistentes con el resto
+        // del proyecto. CompareTag introduce una dependencia en un string "Player"
+        // que puede desincronizarse silenciosamente si se renombra el tag.
+        BallMovementMotor motor =
+            other.GetComponent<BallMovementMotor>()
+            ?? other.GetComponentInParent<BallMovementMotor>();
+
+        if (motor == null) return;
+
+        if (enableDebugLogs)
         {
-            return;
+            Debug.Log(
+                $"[SPEED BOOST] Bola entrando — boost: +{speedBoostAmount:F1} m/s — " +
+                $"velocidad actual: {motor.CurrentPlanarVelocity:F1} m/s — " +
+                $"nuevo máximo efectivo: {motor.MaxSpeed + speedBoostAmount:F1} m/s.",
+                this);
         }
 
-        BallMovementMotor motor = other.GetComponentInParent<BallMovementMotor>()
-            ?? other.GetComponent<BallMovementMotor>();
-
-        if (motor == null)
-        {
-            Debug.LogWarning(
-                "[SPEED BOOST] ⚠ Entrada con 'Player' detectada PERO BallMovementMotor no encontrado.", this);
-            return;
-        }
-
-        Debug.Log(
-            $"[SPEED BOOST] ✓ Bola ENTRANDO a zona de aceleración — " +
-            $"multiplicador: {speedBoostMultiplier:F2}× — " +
-            $"velocidad actual: {motor.CurrentPlanarVelocity:F1} m/s.", this);
-
-        motor.SetSpeedBoostMultiplier(speedBoostMultiplier);
+        motor.SetSpeedBoost(speedBoostAmount);
     }
 
     private void OnTriggerExit(Collider other)
     {
-        if (!other.CompareTag("Player"))
+        BallMovementMotor motor =
+            other.GetComponent<BallMovementMotor>()
+            ?? other.GetComponentInParent<BallMovementMotor>();
+
+        if (motor == null) return;
+
+        if (enableDebugLogs)
         {
-            return;
+            Debug.Log(
+                $"[SPEED BOOST] Bola saliendo — velocidad al salir: {motor.CurrentPlanarVelocity:F1} m/s.",
+                this);
         }
-
-        BallMovementMotor motor = other.GetComponentInParent<BallMovementMotor>()
-            ?? other.GetComponent<BallMovementMotor>();
-
-        if (motor == null)
-        {
-            return;
-        }
-
-        Debug.Log(
-            $"[SPEED BOOST] Bola SALIENDO de zona de aceleración — " +
-            $"velocidad al salir: {motor.CurrentPlanarVelocity:F1} m/s.", this);
 
         motor.ClearSpeedBoost();
     }

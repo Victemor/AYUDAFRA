@@ -3,20 +3,24 @@ using UnityEngine;
 
 /// <summary>
 /// Genera y gestiona los checkpoints del nivel.
-/// Los checkpoints nunca se colocan sobre gaps ni sobre rieles.
-/// Además, impide que un checkpoint anterior sobrescriba el respawn si el jugador ya activó uno más avanzado.
+///
+/// El prefab se instancia tal cual, sin modificar escala, sin añadir componentes.
+/// Responsabilidades del diseñador sobre el prefab:
+/// - Collider con IsTrigger activo.
+/// - Componente <see cref="SpawnPointTrigger"/> configurado.
+/// - Visual base (siempre visible) y visual de vida asignados en el Inspector del prefab.
+///
+/// El manager solo posiciona y orienta el prefab; toda la lógica visual y de
+/// detección vive en <see cref="SpawnPointTrigger"/>.
 /// </summary>
 public sealed class SpawnPointManager : MonoBehaviour
 {
     #region Constants
 
-    private const string RootName = "GeneratedSpawnPoints";
-    private const float DefaultRespawnHeightOffset = 1.2f;
-    private const float MinimumTriggerHeight = 0.1f;
-    private const float MinimumTriggerDepth = 0.05f;
-    private const float MinimumTrackWidth = 0.1f;
-    private const float MinimumValidSectionLength = 0.001f;
-    private const float CheckpointDistanceTolerance = 0.01f;
+    private const string RootName                  = "GeneratedSpawnPoints";
+    private const float  DefaultRespawnHeightOffset = 1.2f;
+    private const float  MinimumValidSectionLength  = 0.001f;
+    private const float  CheckpointDistanceTolerance = 0.01f;
 
     #endregion
 
@@ -24,26 +28,16 @@ public sealed class SpawnPointManager : MonoBehaviour
 
     [Header("Prefab")]
     [SerializeField]
-    [Tooltip("Prefab del checkpoint. Debe tener un Collider con Is Trigger activo. Si no tiene SpawnPointTrigger, se agrega automáticamente.")]
+    [Tooltip("Prefab del checkpoint.\n" +
+             "Requisitos mínimos del prefab:\n" +
+             "  • Un Collider con Is Trigger activo.\n" +
+             "  • Un componente SpawnPointTrigger con sus visuales asignados.\n" +
+             "El generador lo instancia tal cual: no modifica escala ni añade componentes.")]
     private GameObject spawnPointPrefab;
 
-    [Header("Configuración")]
+    [Header("Configuración de Posición")]
     [SerializeField]
-    [Tooltip("Fracciones de la pista donde se colocan los checkpoints. Valores entre 0 y 1. Por defecto: 25%, 50% y 75%.")]
-    private float[] spawnFractions = { 0.25f, 0.5f, 0.75f };
-
-    [SerializeField]
-    [Min(MinimumTriggerHeight)]
-    [Tooltip("Altura del volumen trigger del checkpoint.")]
-    private float triggerHeight = 3f;
-
-    [SerializeField]
-    [Min(MinimumTriggerDepth)]
-    [Tooltip("Profundidad del trigger en la dirección de avance.")]
-    private float triggerDepth = 0.5f;
-
-    [SerializeField]
-    [Tooltip("Elevación del trigger sobre la superficie de la pista.")]
+    [Tooltip("Elevación del prefab sobre la superficie de la pista en metros.")]
     private float triggerElevation = 0.1f;
 
     [SerializeField]
@@ -53,12 +47,19 @@ public sealed class SpawnPointManager : MonoBehaviour
 
     [SerializeField]
     [Min(0f)]
-    [Tooltip("Distancia mínima desde el inicio de una sección válida para evitar colocar el checkpoint exactamente en una unión.")]
+    [Tooltip("Offset desde el inicio de una sección válida para no colocar el checkpoint\n" +
+             "exactamente en la unión entre secciones.")]
     private float sectionStartPadding = 1f;
+
+    [Header("Fracciones")]
+    [SerializeField]
+    [Tooltip("Fracciones normalizadas de la pista donde se colocan los checkpoints.\n" +
+             "0 = inicio, 1 = fin. Valores recomendados: 0.25, 0.5, 0.75.")]
+    private float[] spawnFractions = { 0.25f, 0.5f, 0.75f };
 
     [Header("Debug")]
     [SerializeField]
-    [Tooltip("Si está activo, imprime logs útiles de generación.")]
+    [Tooltip("Si está activo, imprime logs de generación.")]
     private bool enableDebugLogs = true;
 
     #endregion
@@ -88,29 +89,24 @@ public sealed class SpawnPointManager : MonoBehaviour
     #region Public API
 
     /// <summary>
-    /// Coloca los checkpoints a lo largo de la pista generada.
-    /// Nunca los coloca sobre rieles ni gaps.
+    /// Coloca checkpoints a lo largo de la pista generada.
+    /// Solo los coloca en secciones sólidas con superficie; nunca sobre rieles ni gaps.
+    /// El prefab se instancia sin modificar escala ni añadir componentes.
     /// </summary>
     public void PlaceSpawnPoints(
-        TrackRuntimeMap map,
-        float trackWidth,
+        TrackRuntimeMap       map,
         BallRespawnController respawnController,
-        LivesController livesController)
+        LivesController       livesController)
     {
         ClearSpawnPoints();
 
-        if (!CanPlaceSpawnPoints(map, respawnController, livesController))
-        {
-            return;
-        }
+        if (!CanPlaceSpawnPoints(map, respawnController, livesController)) return;
 
         highestActivatedDistance = -1f;
         generatedRoot = CreateRoot();
 
-        float totalDistance = map.PathSampler.TotalDistance;
-        float resolvedTrackWidth = Mathf.Max(MinimumTrackWidth, trackWidth);
-
-        int skippedFractions = 0;
+        float totalDistance    = map.PathSampler.TotalDistance;
+        int   skippedFractions = 0;
 
         for (int i = 0; i < spawnFractions.Length; i++)
         {
@@ -130,32 +126,33 @@ public sealed class SpawnPointManager : MonoBehaviour
                 continue;
             }
 
-            TrackSample sample = map.PathSampler.SampleAtDistance(resolvedDistance);
-
+            TrackSample       sample  = map.PathSampler.SampleAtDistance(resolvedDistance);
             SpawnPointTrigger trigger = CreateSpawnPoint(
-                sample,
-                resolvedTrackWidth,
-                normalizedFraction,
-                resolvedDistance,
-                i,
-                respawnController,
-                livesController);
+                sample, normalizedFraction, resolvedDistance, i,
+                respawnController, livesController);
 
-            activeTriggers.Add(trigger);
+            if (trigger != null)
+            {
+                activeTriggers.Add(trigger);
+            }
+            else
+            {
+                skippedFractions++;
+            }
         }
 
         if (enableDebugLogs)
         {
             Debug.Log(
                 $"[SPAWN POINTS] {activeTriggers.Count} checkpoints colocados. " +
-                $"Fracciones omitidas: {skippedFractions}.",
+                $"Omitidos: {skippedFractions}.",
                 this);
         }
     }
 
     /// <summary>
     /// Resetea todos los checkpoints a no visitado.
-    /// Esto sucede cuando el jugador se queda sin vidas y vuelve al inicio del nivel.
+    /// Llamado cuando el jugador se queda sin vidas y vuelve al inicio del nivel.
     /// </summary>
     public void ResetAllSpawnPoints()
     {
@@ -164,182 +161,84 @@ public sealed class SpawnPointManager : MonoBehaviour
         for (int i = 0; i < activeTriggers.Count; i++)
         {
             if (activeTriggers[i] != null)
-            {
                 activeTriggers[i].ResetTrigger();
-            }
         }
     }
 
-    /// <summary>
-    /// Destruye todos los checkpoints generados previamente.
-    /// </summary>
+    /// <summary>Destruye todos los checkpoints generados previamente.</summary>
     public void ClearSpawnPoints()
     {
         activeTriggers.Clear();
         highestActivatedDistance = -1f;
 
         Transform existingRoot = transform.Find(RootName);
+        if (existingRoot == null) { generatedRoot = null; return; }
 
-        if (existingRoot != null)
-        {
-            existingRoot.SetParent(null);
+        existingRoot.SetParent(null);
 
 #if UNITY_EDITOR
-            if (!Application.isPlaying)
-            {
-                DestroyImmediate(existingRoot.gameObject);
-            }
-            else
-            {
-                Destroy(existingRoot.gameObject);
-            }
+        if (!Application.isPlaying) DestroyImmediate(existingRoot.gameObject);
+        else                        Destroy(existingRoot.gameObject);
 #else
-            Destroy(existingRoot.gameObject);
+        Destroy(existingRoot.gameObject);
 #endif
-        }
-
         generatedRoot = null;
     }
 
     /// <summary>
     /// Indica si un checkpoint puede activarse.
-    /// Evita que checkpoints anteriores sobrescriban el respawn cuando el jugador ya avanzó más.
+    /// Previene que checkpoints anteriores sobrescriban el respawn cuando el jugador ya avanzó más.
     /// </summary>
     public bool CanActivateCheckpoint(float checkpointDistance)
     {
         return checkpointDistance + CheckpointDistanceTolerance >= highestActivatedDistance;
     }
 
-    /// <summary>
-    /// Registra la activación de un checkpoint como el checkpoint más avanzado.
-    /// </summary>
+    /// <summary>Registra la distancia de un checkpoint como la más avanzada activada.</summary>
     public void RegisterCheckpointActivation(float checkpointDistance)
     {
-        highestActivatedDistance = Mathf.Max(highestActivatedDistance, checkpointDistance);
-    }
-
-    #endregion
-
-    #region Distance Resolution
-
-    private bool TryResolveValidSpawnDistance(
-        TrackRuntimeMap map,
-        float requestedDistance,
-        out float resolvedDistance)
-    {
-        resolvedDistance = requestedDistance;
-
-        IReadOnlyList<TrackSectionDefinition> sections = map.Sections;
-
-        if (sections == null || sections.Count == 0)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < sections.Count; i++)
-        {
-            TrackSectionDefinition section = sections[i];
-
-            if (requestedDistance < section.StartDistance || requestedDistance > section.EndDistance)
-            {
-                continue;
-            }
-
-            if (IsValidSpawnSection(section))
-            {
-                resolvedDistance = Mathf.Clamp(
-                    requestedDistance,
-                    section.StartDistance + sectionStartPadding,
-                    section.EndDistance);
-
-                return true;
-            }
-
-            return TryFindNextValidSection(sections, i + 1, out resolvedDistance);
-        }
-
-        return TryFindNextValidSection(sections, 0, out resolvedDistance);
-    }
-
-    private bool TryFindNextValidSection(
-        IReadOnlyList<TrackSectionDefinition> sections,
-        int startIndex,
-        out float resolvedDistance)
-    {
-        resolvedDistance = 0f;
-
-        for (int i = Mathf.Max(0, startIndex); i < sections.Count; i++)
-        {
-            TrackSectionDefinition section = sections[i];
-
-            if (!IsValidSpawnSection(section))
-            {
-                continue;
-            }
-
-            resolvedDistance = Mathf.Min(
-                section.EndDistance,
-                section.StartDistance + sectionStartPadding);
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool IsValidSpawnSection(TrackSectionDefinition section)
-    {
-        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength)
-        {
-            return false;
-        }
-
-        if (!section.HasSurface)
-        {
-            return false;
-        }
-
-        return section.StructureType == TrackStructureType.SolidTrack;
+        if (checkpointDistance > highestActivatedDistance)
+            highestActivatedDistance = checkpointDistance;
     }
 
     #endregion
 
     #region Creation
 
+    /// <summary>
+    /// Instancia el prefab en la posición correcta sin modificar su escala ni añadir componentes.
+    /// Devuelve <c>null</c> si el prefab no tiene <see cref="SpawnPointTrigger"/>.
+    /// </summary>
     private SpawnPointTrigger CreateSpawnPoint(
-        TrackSample sample,
-        float trackWidth,
-        float normalizedFraction,
-        float resolvedDistance,
-        int index,
+        TrackSample           sample,
+        float                 normalizedFraction,
+        float                 resolvedDistance,
+        int                   index,
         BallRespawnController respawnController,
-        LivesController livesController)
+        LivesController       livesController)
     {
-        Vector3 triggerPosition = sample.Position + Vector3.up * triggerElevation;
-        Vector3 respawnPosition = sample.Position + Vector3.up * respawnHeightOffset;
-        Quaternion respawnRotation = Quaternion.LookRotation(sample.Forward, Vector3.up);
+        Vector3    triggerPosition = sample.Position + Vector3.up * triggerElevation;
+        Vector3    respawnPosition = sample.Position + Vector3.up * respawnHeightOffset;
+        Quaternion rotation        = Quaternion.LookRotation(ResolveSafeForward(sample.Forward), Vector3.up);
 
-        GameObject triggerObject = Instantiate(
-            spawnPointPrefab,
-            triggerPosition,
-            respawnRotation,
-            generatedRoot);
+        GameObject instance = Instantiate(spawnPointPrefab, triggerPosition, rotation, generatedRoot);
 
         int percentage = Mathf.RoundToInt(normalizedFraction * 100f);
-        triggerObject.name = $"SpawnPoint_{index + 1:D2}_{percentage}pct_{resolvedDistance:F0}m";
+        instance.name = $"SpawnPoint_{index + 1:D2}_{percentage}pct_{resolvedDistance:F0}m";
 
-        triggerObject.transform.localScale = new Vector3(
-            trackWidth,
-            triggerHeight,
-            triggerDepth);
-
-        EnsureTriggerCollider(triggerObject);
-
-        SpawnPointTrigger trigger = triggerObject.GetComponent<SpawnPointTrigger>();
+        // El prefab se coloca tal cual. Sin modificación de escala.
+        // Sin adición automática de Collider ni SpawnPointTrigger:
+        // son responsabilidad del diseñador sobre el prefab.
+        SpawnPointTrigger trigger = instance.GetComponentInChildren<SpawnPointTrigger>(true);
 
         if (trigger == null)
         {
-            trigger = triggerObject.AddComponent<SpawnPointTrigger>();
+            Debug.LogWarning(
+                $"[SPAWN POINTS] El prefab '{spawnPointPrefab.name}' no contiene un SpawnPointTrigger. " +
+                $"Checkpoint omitido en {resolvedDistance:F0}m.",
+                this);
+            Destroy(instance);
+            return null;
         }
 
         trigger.Initialize(
@@ -347,25 +246,14 @@ public sealed class SpawnPointManager : MonoBehaviour
             respawnController,
             livesController,
             respawnPosition,
-            respawnRotation,
+            rotation,
             resolvedDistance);
 
         return trigger;
     }
 
-    private static void EnsureTriggerCollider(GameObject triggerObject)
-    {
-        Collider collider = triggerObject.GetComponent<Collider>();
-
-        if (collider == null)
-        {
-            BoxCollider boxCollider = triggerObject.AddComponent<BoxCollider>();
-            boxCollider.isTrigger = true;
-            return;
-        }
-
-        collider.isTrigger = true;
-    }
+    private static Vector3 ResolveSafeForward(Vector3 forward)
+        => forward.sqrMagnitude <= 0.0001f ? Vector3.forward : forward.normalized;
 
     private Transform CreateRoot()
     {
@@ -373,9 +261,59 @@ public sealed class SpawnPointManager : MonoBehaviour
         root.transform.SetParent(transform);
         root.transform.localPosition = Vector3.zero;
         root.transform.localRotation = Quaternion.identity;
-        root.transform.localScale = Vector3.one;
-
+        root.transform.localScale    = Vector3.one;
         return root.transform;
+    }
+
+    #endregion
+
+    #region Path Sampling
+
+    private bool TryResolveValidSpawnDistance(
+        TrackRuntimeMap map,
+        float           requestedDistance,
+        out float       resolvedDistance)
+    {
+        resolvedDistance = requestedDistance;
+
+        System.Collections.Generic.IReadOnlyList<TrackSectionDefinition> sections = map.Sections;
+
+        for (int i = 0; i < sections.Count; i++)
+        {
+            TrackSectionDefinition section = sections[i];
+
+            if (requestedDistance < section.StartDistance || requestedDistance > section.EndDistance)
+                continue;
+
+            if (IsValidSpawnSection(section))
+            {
+                resolvedDistance = Mathf.Clamp(requestedDistance, section.StartDistance + sectionStartPadding, section.EndDistance);
+                return true;
+            }
+
+            // Sección inválida en la posición exacta → buscar hacia adelante
+            for (int j = i + 1; j < sections.Count; j++)
+            {
+                TrackSectionDefinition candidate = sections[j];
+                if (!IsValidSpawnSection(candidate)) continue;
+
+                resolvedDistance = Mathf.Min(
+                    candidate.EndDistance,
+                    candidate.StartDistance + sectionStartPadding);
+                return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    private static bool IsValidSpawnSection(TrackSectionDefinition section)
+    {
+        if (section.EndDistance - section.StartDistance <= MinimumValidSectionLength) return false;
+        if (!section.HasSurface) return false;
+        return section.StructureType == TrackStructureType.SolidTrack;
     }
 
     #endregion
@@ -383,81 +321,59 @@ public sealed class SpawnPointManager : MonoBehaviour
     #region Validation
 
     private bool CanPlaceSpawnPoints(
-        TrackRuntimeMap map,
+        TrackRuntimeMap       map,
         BallRespawnController respawnController,
-        LivesController livesController)
+        LivesController       livesController)
     {
         if (spawnPointPrefab == null)
         {
             Debug.LogWarning("[SPAWN POINTS] spawnPointPrefab no asignado.", this);
             return false;
         }
-
-        if (map == null)
+        if (map == null || map.PathSampler == null)
         {
-            Debug.LogWarning("[SPAWN POINTS] TrackRuntimeMap es null.", this);
+            Debug.LogWarning("[SPAWN POINTS] TrackRuntimeMap o PathSampler es null.", this);
             return false;
         }
-
-        if (map.PathSampler == null)
-        {
-            Debug.LogWarning("[SPAWN POINTS] PathSampler es null.", this);
-            return false;
-        }
-
         if (map.Sections == null || map.Sections.Count == 0)
         {
             Debug.LogWarning("[SPAWN POINTS] No hay secciones en el mapa.", this);
             return false;
         }
-
         if (spawnFractions == null || spawnFractions.Length == 0)
         {
             Debug.LogWarning("[SPAWN POINTS] No hay fracciones configuradas.", this);
             return false;
         }
-
         if (respawnController == null)
         {
             Debug.LogWarning("[SPAWN POINTS] BallRespawnController no asignado.", this);
             return false;
         }
-
         if (livesController == null)
         {
             Debug.LogWarning("[SPAWN POINTS] LivesController no asignado.", this);
             return false;
         }
-
         return true;
     }
 
     private void OnValidate()
     {
-        triggerHeight = Mathf.Max(MinimumTriggerHeight, triggerHeight);
-        triggerDepth = Mathf.Max(MinimumTriggerDepth, triggerDepth);
+        triggerElevation    = Mathf.Max(0f, triggerElevation);
         respawnHeightOffset = Mathf.Max(0f, respawnHeightOffset);
         sectionStartPadding = Mathf.Max(0f, sectionStartPadding);
 
-        if (spawnFractions == null)
-        {
-            return;
-        }
-
+        if (spawnFractions == null) return;
         for (int i = 0; i < spawnFractions.Length; i++)
-        {
             spawnFractions[i] = Mathf.Clamp01(spawnFractions[i]);
-        }
     }
 
     #endregion
 
     #region Event Handlers
 
-    private void HandleLevelReset()
-    {
-        ResetAllSpawnPoints();
-    }
+    private void HandleLevelReset() => ResetAllSpawnPoints();
 
     #endregion
 }

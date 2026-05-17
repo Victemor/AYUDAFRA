@@ -85,6 +85,12 @@ public sealed class InfiniteLevelManager : MonoBehaviour
     [Tooltip("Segundos entre que la bola toca la meta y se genera el siguiente nivel.")]
     private float levelTransitionDelay = 0.8f;
 
+    [SerializeField]
+    [Tooltip("Si está activo, el nivel NO avanza automáticamente al llegar a la meta.\n" +
+             "Requiere que el jugador pulse el botón en el panel de PlaytestLevelController.\n" +
+             "Útil para probar mecánicas sin presión de tiempo entre niveles.")]
+    private bool requireInputToAdvance = false;
+
     [Header("Estado Actual — Solo Lectura en Runtime")]
     [SerializeField]
     [Tooltip("Índice del nivel activo. Comienza en 1.")]
@@ -110,6 +116,7 @@ public sealed class InfiniteLevelManager : MonoBehaviour
     private LevelGenerationSettings runtimeTrackSettings;
     private LevelContentGenerationSettings runtimeContentSettings;
     private Coroutine levelTransitionCoroutine;
+    private bool pendingLevelAdvance;
 
     #endregion
 
@@ -226,6 +233,24 @@ public sealed class InfiniteLevelManager : MonoBehaviour
         RepositionBallAtLevelStart();
     }
 
+    /// <summary>
+    /// Avanza manualmente al siguiente nivel.
+    /// Solo tiene efecto si <c>requireInputToAdvance</c> es <c>true</c>
+    /// y el jugador ya llegó a la meta.
+    /// Llamado por <see cref="PlaytestLevelController.OnNextLevelButtonPressed"/>.
+    /// </summary>
+    public void AdvanceToNextLevel()
+    {
+        if (!pendingLevelAdvance) return;
+
+        pendingLevelAdvance = false;
+
+        if (levelTransitionCoroutine != null)
+            StopCoroutine(levelTransitionCoroutine);
+
+        levelTransitionCoroutine = StartCoroutine(LevelTransitionRoutine());
+    }
+
     #endregion
 
     #region Level Flow
@@ -245,8 +270,12 @@ public sealed class InfiniteLevelManager : MonoBehaviour
     private void HandleGoalReached()
     {
         if (levelTransitionCoroutine != null)
-        {
             StopCoroutine(levelTransitionCoroutine);
+
+        if (requireInputToAdvance)
+        {
+            pendingLevelAdvance = true;
+            return;
         }
 
         levelTransitionCoroutine = StartCoroutine(LevelTransitionRoutine());
@@ -361,11 +390,8 @@ public sealed class InfiniteLevelManager : MonoBehaviour
             return;
         }
 
-        float trackWidth = trackGenerator.GenerationProfile.NormalTrackWidth;
-
         spawnPointManager.PlaceSpawnPoints(
             trackGenerator.GeneratedMap,
-            trackWidth,
             ballRespawnController,
             livesController);
     }
@@ -392,12 +418,13 @@ public sealed class InfiniteLevelManager : MonoBehaviour
         powerUpGenerator.GeneratePowerUps(
             trackGenerator.GeneratedMap,
             currentActiveSeed,
-            contentGenerator.ReservationMap,   // compartido con TrackContentGenerator
+            contentGenerator.ReservationMap,
             currentLevelIndex,
             currentProgressionT,
             safeStart,
             safeEnd);
     }
+
     #endregion
 
     #region Adjacent Previews
@@ -475,9 +502,7 @@ public sealed class InfiniteLevelManager : MonoBehaviour
 
         TrackRuntimeMap runtimeMap = trackGenerator.GeneratedMap;
 
-        if (runtimeMap == null ||
-            runtimeMap.SurfaceChunks == null ||
-            runtimeMap.SurfaceChunks.Count == 0)
+        if (runtimeMap == null || runtimeMap.PathSampler == null)
         {
             return false;
         }
@@ -490,19 +515,17 @@ public sealed class InfiniteLevelManager : MonoBehaviour
         }
 
         float safeStartLength = ResolveSafeStartLength(trackProfile);
-        float targetDistance = Mathf.Max(0f, safeStartLength * 0.5f);
 
-        if (!TrySampleTrackAtDistance(
-                runtimeMap.SurfaceChunks,
-                targetDistance,
-                out Vector3 trackPosition,
-                out Vector3 trackForward))
-        {
-            return false;
-        }
+        // TrackPathSampler ya implementa la misma lógica de forma canónica.
+        // No hay razón para duplicarla en InfiniteLevelManager.
+        TrackSample startSample = runtimeMap.PathSampler.SampleAtDistance(safeStartLength);
 
-        spawnPosition = trackPosition + Vector3.up * ballSpawnHeightOffset;
-        spawnRotation = Quaternion.LookRotation(ResolveHorizontalForward(trackForward), Vector3.up);
+        Vector3 horizontalForward = new Vector3(startSample.Forward.x, 0f, startSample.Forward.z);
+
+        spawnPosition = startSample.Position + Vector3.up * ballSpawnHeightOffset;
+        spawnRotation = horizontalForward.sqrMagnitude > 0.0001f
+            ? Quaternion.LookRotation(horizontalForward.normalized, Vector3.up)
+            : Quaternion.identity;
 
         return true;
     }
@@ -611,150 +634,6 @@ public sealed class InfiniteLevelManager : MonoBehaviour
         }
 
         return Mathf.Clamp01((float)(levelIndex - 1) / (levelCountToReachMax - 1));
-    }
-
-    /// <summary>
-    /// Muestra la pista generada en una distancia concreta del recorrido.
-    /// </summary>
-    private static bool TrySampleTrackAtDistance(
-        IReadOnlyList<TrackSurfaceChunkDefinition> chunks,
-        float distance,
-        out Vector3 position,
-        out Vector3 forward)
-    {
-        position = Vector3.zero;
-        forward = Vector3.forward;
-
-        if (chunks == null || chunks.Count == 0)
-        {
-            return false;
-        }
-
-        TrackSurfaceChunkDefinition fallbackChunk = null;
-
-        for (int i = 0; i < chunks.Count; i++)
-        {
-            TrackSurfaceChunkDefinition chunk = chunks[i];
-
-            if (chunk == null ||
-                chunk.Samples == null ||
-                chunk.Samples.Count == 0 ||
-                chunk.StructureType == TrackStructureType.Gap)
-            {
-                continue;
-            }
-
-            if (fallbackChunk == null)
-            {
-                fallbackChunk = chunk;
-            }
-
-            bool containsDistance = distance >= chunk.StartDistance &&
-                                    distance <= chunk.EndDistance;
-
-            if (!containsDistance)
-            {
-                continue;
-            }
-
-            return TrySampleChunkAtDistance(chunk, distance, out position, out forward);
-        }
-
-        if (fallbackChunk == null)
-        {
-            return false;
-        }
-
-        return TrySampleChunkAtDistance(
-            fallbackChunk,
-            fallbackChunk.StartDistance,
-            out position,
-            out forward);
-    }
-
-    /// <summary>
-    /// Interpola una posición y dirección dentro de un chunk de pista.
-    /// </summary>
-    private static bool TrySampleChunkAtDistance(
-        TrackSurfaceChunkDefinition chunk,
-        float distance,
-        out Vector3 position,
-        out Vector3 forward)
-    {
-        const float minDistanceDelta = 0.001f;
-
-        position = Vector3.zero;
-        forward = Vector3.forward;
-
-        IReadOnlyList<TrackLayoutSamplePoint> samples = chunk.Samples;
-
-        if (samples == null || samples.Count == 0)
-        {
-            return false;
-        }
-
-        if (samples.Count == 1)
-        {
-            position = samples[0].Position;
-            forward = ResolveHorizontalForward(samples[0].Forward);
-            return true;
-        }
-
-        if (distance <= samples[0].Distance)
-        {
-            position = samples[0].Position;
-            forward = ResolveHorizontalForward(samples[0].Forward);
-            return true;
-        }
-
-        int lastIndex = samples.Count - 1;
-
-        if (distance >= samples[lastIndex].Distance)
-        {
-            position = samples[lastIndex].Position;
-            forward = ResolveHorizontalForward(samples[lastIndex].Forward);
-            return true;
-        }
-
-        for (int i = 0; i < samples.Count - 1; i++)
-        {
-            TrackLayoutSamplePoint a = samples[i];
-            TrackLayoutSamplePoint b = samples[i + 1];
-
-            if (distance < a.Distance || distance > b.Distance)
-            {
-                continue;
-            }
-
-            float segmentLength = Mathf.Max(minDistanceDelta, b.Distance - a.Distance);
-            float t = Mathf.Clamp01((distance - a.Distance) / segmentLength);
-
-            position = Vector3.Lerp(a.Position, b.Position, t);
-
-            Vector3 sampledForward = Vector3.Slerp(a.Forward, b.Forward, t);
-            forward = ResolveHorizontalForward(sampledForward);
-
-            return true;
-        }
-
-        position = samples[lastIndex].Position;
-        forward = ResolveHorizontalForward(samples[lastIndex].Forward);
-        return true;
-    }
-
-    /// <summary>
-    /// Convierte una dirección cualquiera en una dirección horizontal segura.
-    /// </summary>
-    private static Vector3 ResolveHorizontalForward(Vector3 forward)
-    {
-        forward.y = 0f;
-
-        if (forward.sqrMagnitude <= 0.0001f)
-        {
-            return Vector3.forward;
-        }
-
-        return forward.normalized;
     }
 
     #endregion
